@@ -1,0 +1,19 @@
+# Virtual Environment
+venv/
+__pycache__/
+*.pyc
+
+# IDE / Editor specific
+.vscode/
+*.idea/
+
+# Secrets (API Keys etc.) - Eğer ayrı bir dosyada tutarsak
+secrets.py
+.env
+
+# Log files
+*.log
+
+# Data files (CSV, JSON outputs) - İsteğe bağlı
+# *.csv
+# *.json
