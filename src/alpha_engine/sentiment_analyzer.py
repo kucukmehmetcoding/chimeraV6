@@ -36,12 +36,16 @@ except ImportError:
     logger.error("correlation_manager modülü import edilemedi!")
     correlation_manager = None
 
-# --- VADER Başlatma ---
+# --- VADER Başlatma (Opsiyonel) ---
 try:
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
     analyzer = SentimentIntensityAnalyzer()
+    logger.info("✅ VADER sentiment analyzer yüklendi")
+except ImportError:
+    logger.warning("⚠️ vaderSentiment paketi bulunamadı - Reddit sentiment analizi devre dışı")
+    analyzer = None
 except Exception as e:
-    logger.critical(f"❌ VADER başlatılamadı! Hata: {e}", exc_info=True)
+    logger.warning(f"⚠️ VADER başlatılamadı: {e}")
     analyzer = None
 
 # --- Reddit İstemcisini Başlatma (Global) ---

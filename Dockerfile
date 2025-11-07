@@ -53,7 +53,7 @@ RUN pip install --no-cache-dir praw==7.7.1 pytrends==4.9.2
 RUN pip install --no-cache-dir google-generativeai==0.3.2
 RUN pip install --no-cache-dir aiohttp==3.9.1 websockets==12.0
 RUN pip install --no-cache-dir pycryptodome==3.19.0 tqdm==4.66.1
-RUN pip install --no-cache-dir vaderSentiment==3.3.2
+# vaderSentiment removed - optional dependency, causes build issues
 
 # Copy application code
 COPY . .
