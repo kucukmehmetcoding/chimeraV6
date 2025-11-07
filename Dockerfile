@@ -19,9 +19,9 @@ RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
     ./configure --prefix=/usr && \
     make && \
     make install && \
-    ldconfig && \
     cd .. && \
-    rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
+    rm -rf ta-lib ta-lib-0.4.0-src.tar.gz && \
+    ldconfig
 
 # Copy requirements first for better caching
 COPY requirements.txt .
@@ -29,9 +29,14 @@ COPY requirements.txt .
 # Upgrade pip and install build tools first
 RUN pip install --upgrade pip setuptools wheel
 
+# Install numpy first (TA-Lib dependency)
+RUN pip install --no-cache-dir numpy==1.24.3
+
 # Install core dependencies separately to identify issues
 RUN pip install --no-cache-dir python-binance==1.0.32
-RUN pip install --no-cache-dir pandas==2.1.4 numpy==1.24.3
+RUN pip install --no-cache-dir pandas==2.1.4
+
+# Install TA-Lib Python wrapper (after C library and numpy are ready)
 RUN pip install --no-cache-dir TA-Lib==0.4.28
 
 # Install remaining dependencies
