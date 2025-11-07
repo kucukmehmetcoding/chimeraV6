@@ -19,6 +19,7 @@ RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
     ./configure --prefix=/usr && \
     make && \
     make install && \
+    ldconfig && \
     cd .. && \
     rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
 
