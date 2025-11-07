@@ -25,8 +25,11 @@ RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Upgrade pip and install build tools first
+RUN pip install --upgrade pip setuptools wheel
+
+# Install Python dependencies with verbose output
+RUN pip install --no-cache-dir -r requirements.txt --verbose
 
 # Copy application code
 COPY . .

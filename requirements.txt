@@ -7,13 +7,13 @@
 
 # --- Core Trading & Data ---
 python-binance==1.0.32         # Binance API client
-pandas==2.2.2                   # Data manipulation
-numpy==1.26.4                   # Numerical computing
-TA-Lib==0.4.32                  # Technical analysis indicators
+pandas==2.1.4                   # Data manipulation (more stable)
+numpy==1.24.3                   # Numerical computing (stable for TA-Lib)
+TA-Lib==0.4.28                  # Technical analysis indicators
 
 # --- Database ---
 SQLAlchemy==2.0.23             # ORM for SQLite database
-psycopg2-binary==2.9.9         # PostgreSQL adapter (Coolify deployment optional)
+# psycopg2-binary==2.9.9       # PostgreSQL adapter (optional, commented out for now)
 
 # --- Configuration & Environment ---
 python-dotenv==1.0.0           # .env file support
