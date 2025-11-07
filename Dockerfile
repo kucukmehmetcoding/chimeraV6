@@ -28,8 +28,20 @@ COPY requirements.txt .
 # Upgrade pip and install build tools first
 RUN pip install --upgrade pip setuptools wheel
 
-# Install Python dependencies with verbose output
-RUN pip install --no-cache-dir -r requirements.txt --verbose
+# Install core dependencies separately to identify issues
+RUN pip install --no-cache-dir python-binance==1.0.32
+RUN pip install --no-cache-dir pandas==2.1.4 numpy==1.24.3
+RUN pip install --no-cache-dir TA-Lib==0.4.28
+
+# Install remaining dependencies
+RUN pip install --no-cache-dir SQLAlchemy==2.0.23 python-dotenv==1.0.0 PyYAML==6.0.1
+RUN pip install --no-cache-dir schedule==1.2.1 tenacity==8.2.3 retry==0.9.2
+RUN pip install --no-cache-dir python-telegram-bot==21.0 requests==2.31.0
+RUN pip install --no-cache-dir feedparser==6.0.11 beautifulsoup4==4.12.3 lxml==5.1.0
+RUN pip install --no-cache-dir praw==7.7.1 pytrends==4.9.2
+RUN pip install --no-cache-dir google-generativeai==0.3.2
+RUN pip install --no-cache-dir aiohttp==3.9.1 websockets==12.0
+RUN pip install --no-cache-dir pycryptodome==3.19.0 tqdm==4.66.1
 
 # Copy application code
 COPY . .
