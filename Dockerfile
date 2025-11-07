@@ -6,10 +6,11 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies for TA-Lib
+# Install system dependencies for TA-Lib and compilation
 RUN apt-get update && apt-get install -y \
     wget \
     build-essential \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install TA-Lib C library
@@ -23,21 +24,18 @@ RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
     rm -rf ta-lib ta-lib-0.4.0-src.tar.gz && \
     ldconfig
 
-# Copy requirements first for better caching
-COPY requirements.txt .
-
 # Upgrade pip and install build tools first
-RUN pip install --upgrade pip setuptools wheel
+RUN pip install --upgrade pip setuptools wheel Cython
 
 # Install numpy first (TA-Lib dependency)
 RUN pip install --no-cache-dir numpy==1.24.3
 
-# Install core dependencies separately to identify issues
+# Install TA-Lib from source (more reliable than PyPI)
+RUN pip install --no-cache-dir --no-binary :all: TA-Lib
+
+# Install core dependencies
 RUN pip install --no-cache-dir python-binance==1.0.32
 RUN pip install --no-cache-dir pandas==2.1.4
-
-# Install TA-Lib Python wrapper (after C library and numpy are ready)
-RUN pip install --no-cache-dir TA-Lib==0.4.28
 
 # Install remaining dependencies
 RUN pip install --no-cache-dir SQLAlchemy==2.0.23 python-dotenv==1.0.0 PyYAML==6.0.1
