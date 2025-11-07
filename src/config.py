@@ -18,16 +18,22 @@ BOT_VERSION = "5.0-AutoPilot" # GÜNCELLENDİ: v5.0 Oto-Pilot Trading Engine
 
 # --- API Anahtarları ---
 # Testnet moduna göre key seçimi
-BINANCE_TESTNET = os.getenv("BINANCE_TESTNET", "True").lower() == "true"
+BINANCE_TESTNET_RAW = os.getenv("BINANCE_TESTNET", "True")
+BINANCE_TESTNET = BINANCE_TESTNET_RAW.lower() in ["true", "1", "yes"]
+
+# Debug log
+print(f"🔍 Config Debug: BINANCE_TESTNET_RAW='{BINANCE_TESTNET_RAW}' → BINANCE_TESTNET={BINANCE_TESTNET}")
 
 if BINANCE_TESTNET:
     # Testnet mode - testnet keys kullan
     BINANCE_API_KEY = os.getenv("BINANCE_TESTNET_API_KEY", "YOUR_TESTNET_API_KEY_HERE")
     BINANCE_SECRET_KEY = os.getenv("BINANCE_TESTNET_SECRET_KEY", "YOUR_TESTNET_SECRET_KEY_HERE")
+    print(f"🔍 Config Debug: TESTNET MODE - API Key başlangıcı: {BINANCE_API_KEY[:10]}...")
 else:
     # Live mode - real keys kullan
     BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "YOUR_BINANCE_API_KEY_PLACEHOLDER")
     BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY", "YOUR_BINANCE_SECRET_KEY_PLACEHOLDER")
+    print(f"🔍 Config Debug: LIVE MODE - API Key başlangıcı: {BINANCE_API_KEY[:10]}...")
 
 # --- Binance Futures Trading Ayarları (v5.0) ---
 FUTURES_LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", 10))  # Sabit kaldıraç (tüm pozisyonlar)
