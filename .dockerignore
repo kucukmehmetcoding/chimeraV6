@@ -1,0 +1,83 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs (will be generated in container)
+logs/*.log
+
+# Database (will be created in container)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Test files
+test_*.py
+*_test.py
+simulate_*.py
+check_*.py
+debug_*.py
+analyze_*.py
+clean_*.py
+delete_*.py
+explain_*.py
+show_*.py
+profit_tracker.py
+new_limits_summary.py
+
+# Documentation
+*.md
+!README.md
+
+# Git
+.git/
+.gitignore
+
+# Environment (will be injected by Coolify)
+.env
+.env.example
+
+# Shell scripts
+*.sh
+
+# CSV reports
+*.csv
+
+# JSON data files
+data/*.json

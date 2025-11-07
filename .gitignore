@@ -1,19 +1,70 @@
+# ============================================================================
+# ChimeraBot .gitignore - Production Ready
+# ============================================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
 # Virtual Environment
 venv/
-__pycache__/
-*.pyc
+env/
+ENV/
+.venv
 
-# IDE / Editor specific
+# IDE
 .vscode/
-*.idea/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
 
-# Secrets (API Keys etc.) - Eğer ayrı bir dosyada tutarsak
-secrets.py
+# Environment variables & Secrets
 .env
+.env.local
+secrets.py
 
-# Log files
+# Logs
+logs/*.log
 *.log
 
-# Data files (CSV, JSON outputs) - İsteğe bağlı
-# *.csv
-# *.json
+# Database
+data/*.db
+data/*.db-shm
+data/*.db-wal
+*.db
+*.sqlite
+*.sqlite3
+
+# Test files (deployment'a gitmemeli)
+test_*.py
+*_test.py
+simulate_*.py
+check_*.py
+debug_*.py
+analyze_*.py
+clean_*.py
+delete_*.py
+explain_*.py
+show_*.py
+profit_tracker.py
+new_limits_summary.py
+
+# Data files
+data/*.json
+data/*.csv
+*.csv
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# OS
+Thumbs.db
+.DS_Store

@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  chimerabot:
+    build: .
+    container_name: chimerabot
+    restart: unless-stopped
+    environment:
+      # Binance API
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_SECRET_KEY=${BINANCE_SECRET_KEY}
+      
+      # Telegram
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      
+      # Reddit (Optional)
+      - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID:-}
+      - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET:-}
+      - REDDIT_USER_AGENT=${REDDIT_USER_AGENT:-ChimeraBot/1.0}
+      
+      # Google Gemini (Optional)
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      
+      # Database (optional PostgreSQL)
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///data/chimerabot.db}
+      
+    volumes:
+      # Persist data and logs
+      - ./data:/app/data
+      - ./logs:/app/logs
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; os.path.exists('/app/logs/chimerabot.log')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
