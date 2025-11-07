@@ -11,6 +11,11 @@ RUN apt-get update && apt-get install -y \
     wget \
     build-essential \
     git \
+    gcc \
+    g++ \
+    make \
+    libc-dev \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install TA-Lib C library
@@ -30,8 +35,10 @@ RUN pip install --upgrade pip setuptools wheel Cython
 # Install numpy first (TA-Lib dependency)
 RUN pip install --no-cache-dir numpy==1.24.3
 
-# Install TA-Lib from source (more reliable than PyPI)
-RUN pip install --no-cache-dir --no-binary :all: TA-Lib
+# Install TA-Lib Python wrapper (try with verbose output)
+RUN pip install --no-cache-dir --no-binary :all: TA-Lib || \
+    (echo "First attempt failed, trying with verbose..." && \
+     pip install --no-cache-dir --verbose TA-Lib)
 
 # Install core dependencies
 RUN pip install --no-cache-dir python-binance==1.0.32
