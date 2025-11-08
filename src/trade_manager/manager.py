@@ -533,6 +533,32 @@ def continuously_check_positions(
                         if pos_in_db is None: continue # Zaten kapatılmış
                         
                         try:
+                            # 🔥 KRİTİK: BİNANCE'DE POZİSYONU KAPAT!
+                            executor = get_executor()
+                            if executor:
+                                try:
+                                    logger.info(f"🔥 {pos_in_db.symbol} pozisyonu Binance'de kapatılıyor ({close_reason})...")
+                                    
+                                    # MARKET emri ile pozisyonu kapat
+                                    close_order = executor.close_position_market(
+                                        symbol=pos_in_db.symbol,
+                                        quantity_units=pos_in_db.position_size_units
+                                    )
+                                    
+                                    if close_order:
+                                        logger.info(f"✅ {pos_in_db.symbol} Binance'de kapatıldı! Emir ID: {close_order.get('orderId', 'N/A')}")
+                                        # Gerçek kapanış fiyatını al (eğer varsa)
+                                        if 'avgPrice' in close_order and close_order['avgPrice']:
+                                            actual_close_price = float(close_order['avgPrice'])
+                                            close_price = actual_close_price
+                                    else:
+                                        logger.error(f"❌ {pos_in_db.symbol} Binance'de kapatılamadı!")
+                                        
+                                except Exception as close_ex:
+                                    logger.error(f"❌ {pos_in_db.symbol} kapatma hatası: {close_ex}", exc_info=True)
+                            else:
+                                logger.warning(f"⚠️ Executor yok, {pos_in_db.symbol} sadece DB'den silinecek")
+                            
                             pnl_result = _calculate_pnl(pos_in_db.entry_price, close_price, pos_in_db.direction, pos_in_db.position_size_units)
                             pnl_usd = float(pnl_result['pnl_usd']) if pnl_result else None
                             pnl_percent = float(pnl_result['pnl_percent']) if pnl_result else None
