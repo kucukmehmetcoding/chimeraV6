@@ -61,6 +61,10 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p /app/data /app/logs
 
+# Run DB migrations (ensure schema is up to date)
+# || true ensures build continues even if migration fails
+RUN python3 migrations/add_advanced_risk_columns.py || true
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
