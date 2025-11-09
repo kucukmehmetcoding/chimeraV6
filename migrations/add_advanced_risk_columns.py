@@ -38,6 +38,13 @@ def add_advanced_risk_columns():
         ("max_favorable_excursion", "REAL DEFAULT 0.0"),
         ("max_adverse_excursion", "REAL DEFAULT 0.0"),
         
+        # v8.1: Enhanced Partial TP Tracking (models.py'de var ama DB'de eksik)
+        ("partial_tp_1_percent", "REAL"),
+        ("partial_tp_1_taken", "INTEGER DEFAULT 0"),
+        ("partial_tp_2_percent", "REAL"),
+        ("partial_tp_2_taken", "INTEGER DEFAULT 0"),
+        ("remaining_position_size", "REAL"),
+        
         # Risk Optimizasyonu Kolonları (models.py'de var ama DB'de eksik)
         ("volatility_score", "REAL"),
         ("sentiment_alignment", "REAL"),
