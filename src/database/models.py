@@ -128,6 +128,8 @@ class OpenPosition(Base):
     # --- v4.0 Enhanced: Partial Profit Taking (ESKİ - yukarıdakilerle birleştirildi) ---
     partial_tp_1_percent = Column(Float, nullable=True)  # İlk kısmi TP'de kapatılacak pozisyon yüzdesi
     partial_tp_1_taken = Column(Boolean, default=False)  # ESKİ isim - partial_tp_1_filled ile aynı
+    partial_tp_2_percent = Column(Float, nullable=True)  # v8.1: İkinci kısmi TP'de kapatılacak pozisyon yüzdesi
+    partial_tp_2_taken = Column(Boolean, default=False)  # v8.1: İkinci kısmi TP alındı mı?
     remaining_position_size = Column(Float, nullable=True)  # Kalan pozisyon boyutu
     # -----------------------------------------------
     

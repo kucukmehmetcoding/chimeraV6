@@ -473,7 +473,7 @@ def continuously_check_positions(
                 
                 close_reason = None
                 
-                # --- Adım 2a: Partial TP Kontrolü (v4.0 Enhanced) ---
+                # --- Adım 2a: Partial TP-1 Kontrolü (v4.0 Enhanced) ---
                 if (pos.partial_tp_1_price is not None and 
                     not pos.partial_tp_1_taken and 
                     pos.partial_tp_1_percent is not None):
@@ -505,6 +505,39 @@ def continuously_check_positions(
                         
                         # DB güncellemesi için işaretle
                         positions_to_update.append((pos, None, None, True, remaining_size, current_price))
+                        continue  # Bu cycle'da başka kontrol yapma
+                
+                # --- Adım 2a-2: Partial TP-2 Kontrolü (v8.1 NEW) ---
+                if (pos.partial_tp_2_price is not None and 
+                    pos.partial_tp_1_taken and  # TP1 alınmış olmalı
+                    not pos.partial_tp_2_taken and 
+                    pos.partial_tp_2_percent is not None):
+                    
+                    partial_hit_2 = False
+                    if pos.direction.upper() == 'LONG' and current_price >= pos.partial_tp_2_price:
+                        partial_hit_2 = True
+                    elif pos.direction.upper() == 'SHORT' and current_price <= pos.partial_tp_2_price:
+                        partial_hit_2 = True
+                    
+                    if partial_hit_2:
+                        # TP2: Kalan pozisyonun tamamını kapat (genelde %100 of remaining)
+                        partial_size_2 = pos.position_size_units  # Kalan tüm pozisyon
+                        
+                        # Kısmi PnL hesapla
+                        partial_pnl_2 = _calculate_pnl(
+                            pos.entry_price, 
+                            current_price, 
+                            pos.direction, 
+                            partial_size_2
+                        )
+                        
+                        logger.info(f"🎯🎯 PARTIAL TP-2 HIT! {pos.symbol} ({pos.direction})")
+                        logger.info(f"   Kapanan: {partial_size_2:.4f} (FULL EXIT - Remaining {pos.partial_tp_2_percent:.0f}%)")
+                        if partial_pnl_2:
+                            logger.info(f"   Kısmi PnL: {float(partial_pnl_2['pnl_usd']):.2f} USD ({float(partial_pnl_2['pnl_percent']):.2f}%)")
+                        
+                        # TP2 hit = pozisyon tamamen kapanıyor
+                        positions_to_close.append((pos, 'PARTIAL_TP_2', current_price))
                         continue  # Bu cycle'da başka kontrol yapma
                 
                 # --- Adım 2b: SL/TP Kontrolü ---

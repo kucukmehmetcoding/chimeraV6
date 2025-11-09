@@ -66,6 +66,9 @@ stop_event = threading.Event()
 executor = None
 capital_manager = None
 
+# v8.1: Rotating coin scan offset (tüm coinlerin taranması için)
+coin_scan_offset = 0
+
 # --- Rate Limit Ayarları ---
 def adjust_rate_limit(increase: bool = True):
     """
@@ -213,10 +216,31 @@ def main_scan_cycle():
                     return
                 initial_list = list(correlation_groups.keys())
             
-            # Liste uzunluğu limiti
-            max_coins = getattr(config, 'MAX_COINS_TO_SCAN', 110)
-            if len(initial_list) > max_coins:
-                logger.info(f"⚠️ Liste çok uzun ({len(initial_list)}), ilk {max_coins} coin seçiliyor")
+            # v8.1: Rotating Queue - Tüm coinlerin taranması için
+            global coin_scan_offset
+            max_coins = getattr(config, 'MAX_COINS_TO_SCAN', 300)
+            enable_rotating = getattr(config, 'ENABLE_ROTATING_SCAN', True)
+            
+            if enable_rotating and len(initial_list) > max_coins:
+                # Rotating offset hesapla
+                start_idx = coin_scan_offset % len(initial_list)
+                end_idx = (start_idx + max_coins) % len(initial_list)
+                
+                # Wrap-around kontrolü
+                if end_idx > start_idx:
+                    initial_list = initial_list[start_idx:end_idx]
+                else:
+                    # Listenin sonuna gelince başa dön
+                    initial_list = initial_list[start_idx:] + initial_list[:end_idx]
+                
+                logger.info(f"🔄 Rotating Scan: Coins [{start_idx}→{(start_idx + len(initial_list) - 1) % (coin_scan_offset + len(initial_list))}] / Total Pool")
+                logger.info(f"📊 Bu cycle'da {len(initial_list)} coin taranacak (offset: {coin_scan_offset})")
+                
+                # Sonraki cycle için offset'i artır
+                coin_scan_offset += max_coins
+            elif len(initial_list) > max_coins:
+                # Eski davranış (backward compatibility - ENABLE_ROTATING_SCAN=False)
+                logger.warning(f"⚠️ Liste çok uzun ({len(initial_list)}), ilk {max_coins} coin seçiliyor (Rotating KAPALI)")
                 initial_list = initial_list[:max_coins]
             
             if not initial_list:

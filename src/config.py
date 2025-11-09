@@ -76,6 +76,9 @@ SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", 2))  # GÜNCELLEN
 MAX_COINS_TO_SCAN = int(os.getenv("MAX_COINS_TO_SCAN", 300))  # v4.0: 110 → 300 (Futures için)
 SCAN_DELAY_SECONDS = float(os.getenv("SCAN_DELAY_SECONDS", 0.5))
 
+# v8.1: Rotating Scan (tüm coinlerin döngüsel taranması)
+ENABLE_ROTATING_SCAN = os.getenv("ENABLE_ROTATING_SCAN", "True").lower() == "true"  # True: Rotating mode, False: İlk N coin
+
 # --- v4.0 Enhanced: Dinamik Coin Listesi ---
 # 'MANUAL': CORRELATION_GROUPS içindeki coinleri kullan (106 coin)
 # 'AUTO_FUTURES': Binance Futures'tan tüm USDT çiftlerini otomatik çek (~300+ coin)
