@@ -1,5 +1,23 @@
 # 🚀 Coolify Deployment Hazırlık Özeti
 
+## 🚨 KRİTİK: DB Migration Gerekli!
+
+**UYARI:** Deployment öncesi mutlaka migration çalıştırın!
+
+**Hata:** `sqlite3.OperationalError: no such column: open_positions.initial_sl`
+
+**Çözüm:**
+```bash
+# Coolify terminal'de
+cd /app
+python3 migrations/add_advanced_risk_columns.py
+supervisorctl restart chimerabot
+```
+
+**Detaylı guide:** Aşağıda "DB Migration Guide" bölümüne bakın.
+
+---
+
 ## ✅ Tamamlanan İşlemler
 
 ### 1. Requirements.txt Güncellendi
@@ -262,15 +280,68 @@ rm -rf test_env
 
 ---
 
-## 🚨 Deployment Sonrası Yapılacaklar
+## � DB Migration Guide (KRİTİK!)
 
-1. ✅ İlk scan cycle'ı bekle (10 dakika)
-2. ✅ Telegram bildirimlerini kontrol et
-3. ✅ Database'e bak: `docker exec chimerabot ls -lh /app/data/`
-4. ✅ Logs'u incele: `docker logs chimerabot --tail=100`
-5. ✅ İlk pozisyon açılışını izle
-6. ✅ Binance'te TP/SL orderları kontrol et
-7. ✅ Performance metrics'i takip et (ilk 24 saat)
+### Sorun
+Coolify deployment'ında SQLite DB'de 20 adet kolon eksik:
+- `initial_sl`, `trailing_stop_distance`, `high_water_mark`
+- `partial_tp_1_price`, `partial_tp_2_price`
+- `volatility_score`, `sentiment_alignment`, `kelly_percent`
+- ... ve 12 kolon daha
+
+### Hızlı Çözüm
+
+**Yöntem 1: Manuel Migration (Önerilen)**
+```bash
+# Coolify terminal'de
+cd /app
+python3 migrations/add_advanced_risk_columns.py
+supervisorctl restart chimerabot
+```
+
+**Yöntem 2: Shell Script**
+```bash
+cd /app
+chmod +x run_migration.sh
+./run_migration.sh
+```
+
+**Yöntem 3: Dockerfile'a Ekle (Otomatik)**
+```dockerfile
+# Dockerfile içinde, CMD'den önce:
+RUN python3 migrations/add_advanced_risk_columns.py || true
+```
+
+### Doğrulama
+```bash
+# Migration sonrası kontrol
+sqlite3 /app/data/chimerabot.db "PRAGMA table_info(open_positions);" | grep initial_sl
+
+# Beklenen çıktı:
+# 19|initial_sl|REAL|0||0
+```
+
+### Güvenlik
+```bash
+# Migration öncesi backup (isteğe bağlı)
+cp /app/data/chimerabot.db /app/data/chimerabot_backup_$(date +%Y%m%d).db
+```
+
+**Not:** Migration idempotent (birden fazla çalıştırılabilir), mevcut veri kaybolmaz.
+
+---
+
+## �🚨 Deployment Sonrası Yapılacaklar
+
+1. ✅ **DB Migration çalıştır** (yukarıdaki guide)
+2. ✅ İlk scan cycle'ı bekle (10 dakika)
+3. ✅ Telegram bildirimlerini kontrol et
+4. ✅ Database'e bak: `docker exec chimerabot ls -lh /app/data/`
+5. ✅ Logs'u incele: `docker logs chimerabot --tail=100`
+6. ✅ İlk pozisyon açılışını izle
+7. ✅ Binance'te TP/SL orderları kontrol et
+8. ✅ Performance metrics'i takip et (ilk 24 saat)
+
 
 ---
 

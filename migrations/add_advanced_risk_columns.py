@@ -19,13 +19,20 @@ def add_advanced_risk_columns():
     table_name = "open_positions"  # OpenPosition → open_positions
     
     columns_to_add = [
-        # Gelişmiş Risk Yönetimi
+        # Gelişmiş Risk Yönetimi (Trailing Stop & Partial TP)
         ("initial_sl", "REAL"),
-        ("trailing_stop_price", "REAL"),
         ("trailing_stop_active", "INTEGER DEFAULT 0"),
+        ("trailing_stop_price", "REAL"),
+        ("trailing_stop_distance", "REAL"),  # EKSİK KOLON
+        ("high_water_mark", "REAL"),  # EKSİK KOLON
+        
+        # Kısmi Kar Alma (Partial TP)
+        ("partial_tp_1_price", "REAL"),  # EKSİK KOLON
         ("partial_tp_1_filled", "INTEGER DEFAULT 0"),
         ("partial_tp_2_price", "REAL"),
         ("partial_tp_2_filled", "INTEGER DEFAULT 0"),
+        
+        # Breakeven & Risk Takibi
         ("breakeven_moved", "INTEGER DEFAULT 0"),
         ("current_risk_percent", "REAL"),
         ("max_favorable_excursion", "REAL DEFAULT 0.0"),
