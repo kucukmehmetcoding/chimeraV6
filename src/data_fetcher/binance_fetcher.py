@@ -213,6 +213,8 @@ def get_all_futures_usdt_symbols() -> Optional[List[str]]:
     """
     Binance Futures'ta işlem gören tüm USDT perpetual kontratlarını çeker.
     
+    v9.0 PRECISION: Stablecoin ve blacklist filtreleme eklendi
+    
     Returns:
         Optional[List[str]]: ['BTCUSDT', 'ETHUSDT', ...] veya None (hata durumunda)
     """
@@ -221,12 +223,17 @@ def get_all_futures_usdt_symbols() -> Optional[List[str]]:
         return None
     
     try:
+        # v9.0: Blacklist import
+        from config import BLACKLISTED_SYMBOLS
+        
         logger.info("Binance Futures USDT perpetual kontratları çekiliyor...")
         
         # Futures exchange bilgilerini al
         exchange_info = binance_client.futures_exchange_info()
         
         usdt_symbols = []
+        blacklisted_count = 0
+        
         for symbol_info in exchange_info.get('symbols', []):
             symbol = symbol_info.get('symbol', '')
             status = symbol_info.get('status', '')
@@ -237,12 +244,23 @@ def get_all_futures_usdt_symbols() -> Optional[List[str]]:
             # 1. USDT çifti olmalı
             # 2. TRADING durumunda olmalı
             # 3. PERPETUAL (sonsuz) kontrat olmalı
+            # 4. v9.0: Blacklist'te olmamalı
             if (quote_asset == 'USDT' and 
                 status == 'TRADING' and 
                 contract_type == 'PERPETUAL'):
+                
+                # v9.0: Blacklist kontrolü
+                if symbol in BLACKLISTED_SYMBOLS:
+                    blacklisted_count += 1
+                    logger.debug(f"⛔ {symbol} blacklist'te, atlanıyor")
+                    continue
+                
                 usdt_symbols.append(symbol)
         
         logger.info(f"✅ Binance Futures: {len(usdt_symbols)} adet USDT perpetual kontratı bulundu")
+        if blacklisted_count > 0:
+            logger.info(f"⛔ {blacklisted_count} adet coin blacklist nedeniyle filtrelendi")
+        
         return sorted(usdt_symbols)
     
     except BinanceAPIException as e:
