@@ -5,10 +5,11 @@ import time
 from threading import Lock, Event
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Dict, Tuple
+from binance.exceptions import BinanceAPIException
 
 # Importlar
 try:
-    from src.database.models import db_session, OpenPosition, TradeHistory
+    from src.database.models import db_session, OpenPosition, TradeHistory, get_db_session  # YENİ import
     from src.data_fetcher.realtime_manager import RealTimeDataManager
     from src.notifications import telegram as telegram_notifier
     from src import config
@@ -16,6 +17,7 @@ try:
     from src.data_fetcher import binance_fetcher
     # v5.0 AUTO-PILOT: Executor import
     from src.trade_manager.executor import get_executor
+    from src.data_fetcher.binance_fetcher import binance_client
 except ImportError as e:
     print(f"KRİTİK HATA (Trade Manager): Gerekli modüller import edilemedi: {e}")
     raise
@@ -248,6 +250,20 @@ def continuously_check_positions(
     sync_counter = 0
     sync_interval = 10  # Her 30 saniyede bir (3sn * 10 = 30sn)
     
+    # v7.1 YENİ: Margin raporu sayacı (her 20 döngüde bir rapor)
+    margin_report_counter = 0
+    margin_report_interval = 20  # Her 60 saniyede bir (3sn * 20 = 60sn)
+    
+    # Margin tracker başlat
+    try:
+        from src.trade_manager.margin_tracker import create_margin_tracker
+        margin_tracker = create_margin_tracker(config)
+        margin_tracking_enabled = True
+        logger.info("📊 Margin tracking sistemi aktif")
+    except Exception as mt_e:
+        logger.warning(f"⚠️ Margin tracker başlatılamadı: {mt_e}")
+        margin_tracking_enabled = False
+    
     while not stop_event.is_set():
         # v5.0: Binance senkronizasyonu (her X döngüde bir)
         sync_counter += 1
@@ -259,6 +275,21 @@ def continuously_check_positions(
                 sync_counter = 0
             except Exception as sync_e:
                 logger.error(f"Senkronizasyon hatası: {sync_e}", exc_info=True)
+        
+        # v7.1 YENİ: Periyodik margin raporu
+        margin_report_counter += 1
+        if margin_tracking_enabled and margin_report_counter >= margin_report_interval:
+            try:
+                db_for_margin = db_session()
+                try:
+                    margin_tracker.log_margin_health_report(db_for_margin)
+                    margin_report_counter = 0
+                except Exception as margin_e:
+                    logger.error(f"Margin raporu hatası: {margin_e}", exc_info=True)
+                finally:
+                    db_session.remove()
+            except Exception as e:
+                logger.error(f"Margin raporu DB erişim hatası: {e}", exc_info=True)
         
         positions_to_close = []   # (pos_obj, close_reason, close_price)
         positions_to_update = []  # (pos_obj, new_sl, new_hwm) TSL için
@@ -304,6 +335,40 @@ def continuously_check_positions(
                 if stop_event.is_set(): break
                 
                 symbol = pos.symbol
+                
+                # 🆕 v7.1: SİMÜLASYON POZİSYONLARINI GHOST KONTROLÜNDEN MUAF TUT
+                is_simulated = (pos.status == 'SIMULATED')
+                
+                if is_simulated:
+                    # Simülasyon pozisyonu - Binance'de olmayacak, ghost kontrolü yapma
+                    logger.debug(f"🎮 {symbol} simülasyon pozisyonu, Binance kontrolü atlanıyor")
+                    # Sadece fiyat bazlı SL/TP kontrolü yapılacak
+                else:
+                    # GERÇEK POZİSYON - Grace period ve ghost kontrolü yap
+                    # 🆕 GRACE PERIOD: Yeni açılan pozisyonları ghost kontrolünden koru
+                    NEWLY_OPENED_GRACE_PERIOD = 60  # 60 saniye koruma süresi
+                    position_age = time.time() - pos.open_time
+                    
+                    if position_age < NEWLY_OPENED_GRACE_PERIOD:
+                        # Pozisyon çok yeni, Binance API henüz güncellememiş olabilir
+                        logger.debug(f"🆕 {symbol} yeni açıldı ({position_age:.0f}s), ghost kontrolü atlanıyor")
+                        # Ghost kontrolü yapma, normal kontrollere geç
+                    else:
+                        # ⚠️ KRİTİK: Database'de var ama Binance'de kapanmış pozisyonları temizle
+                        binance_position = binance_positions_map.get(symbol)
+                        if binance_position:
+                            # Binance pozisyonu miktarını kontrol et
+                            position_amt = float(binance_position.get('positionAmt', 0))
+                            if abs(position_amt) < 0.00001:  # Pozisyon kapalı
+                                logger.warning(f"👻 {symbol} database'de var ama Binance'de KAPALI! Temizleniyor...")
+                                positions_to_close.append((pos, 'BINANCE_CLOSED', None))
+                                continue
+                        else:
+                            # Binance'de hiç pozisyon yok
+                            logger.warning(f"👻 {symbol} database'de var ama Binance'de BULUNAMADI! Temizleniyor...")
+                            positions_to_close.append((pos, 'BINANCE_CLOSED', None))
+                            continue
+                
                 current_price = realtime_manager.get_price(symbol)
                 
                 if current_price is None:
@@ -468,22 +533,24 @@ def continuously_check_positions(
                                 if pos.sl_order_id:
                                     executor.cancel_order(pos.symbol, pos.sl_order_id)
                                 
-                                # 2. Yeni SL emrini yerleştir
+                                # 2. Yeni SL emrini yerleştir (fiyatı yuvarla!)
                                 close_side = 'SELL' if pos.direction == 'LONG' else 'BUY'
+                                rounded_sl = executor.round_price(pos.symbol, new_sl)
+                                
                                 new_sl_order = executor.client.futures_create_order(
                                     symbol=pos.symbol,
                                     side=close_side,
                                     type='STOP_MARKET',
                                     quantity=executor.round_quantity(pos.symbol, pos.position_size_units),
-                                    stopPrice=new_sl,
+                                    stopPrice=rounded_sl,
                                     reduceOnly=True,
                                     timeInForce='GTE_GTC'
                                 )
                                 
                                 # Güncellenecekler listesine ekle (yeni order_id ile)
-                                positions_to_update.append((pos, new_sl, new_hwm, False, None, new_sl_order['orderId']))
+                                positions_to_update.append((pos, rounded_sl, new_hwm, False, None, new_sl_order['orderId']))
                                 
-                                logger.info(f"   ✅ {pos.symbol} Trailing SL güncellendi! Yeni emir: {new_sl_order['orderId']}")
+                                logger.info(f"   ✅ {pos.symbol} Trailing SL güncellendi! Yeni emir: {new_sl_order['orderId']} (SL: {rounded_sl})")
                                 
                             except Exception as tsl_e:
                                 logger.error(f"   ❌ {pos.symbol} Trailing SL güncellenemedi: {tsl_e}", exc_info=True)
@@ -534,8 +601,9 @@ def continuously_check_positions(
                         
                         try:
                             # 🔥 KRİTİK: BİNANCE'DE POZİSYONU KAPAT!
+                            # ANCAK: BINANCE_CLOSED ise zaten kapanmış, emir gönderme!
                             executor = get_executor()
-                            if executor:
+                            if executor and close_reason != 'BINANCE_CLOSED':
                                 try:
                                     logger.info(f"🔥 {pos_in_db.symbol} pozisyonu Binance'de kapatılıyor ({close_reason})...")
                                     
@@ -556,6 +624,12 @@ def continuously_check_positions(
                                         
                                 except Exception as close_ex:
                                     logger.error(f"❌ {pos_in_db.symbol} kapatma hatası: {close_ex}", exc_info=True)
+                            elif close_reason == 'BINANCE_CLOSED':
+                                # Pozisyon zaten Binance'de kapanmış, sadece DB'yi temizle
+                                logger.info(f"👻 {pos_in_db.symbol} Binance'de zaten kapanmış, DB'den temizleniyor...")
+                                # Son bilinen fiyatı kullan (close_price None ise)
+                                if close_price is None:
+                                    close_price = pos_in_db.entry_price  # Fallback
                             else:
                                 logger.warning(f"⚠️ Executor yok, {pos_in_db.symbol} sadece DB'den silinecek")
                             
@@ -731,3 +805,206 @@ def continuously_check_positions(
         stop_event.wait(sleep_duration)
 
     logger.info("🛑 Trade Manager thread'i durduruldu.")
+
+def monitor_positions_loop():
+    """
+    Açık pozisyonları sürekli takip eder, SL/TP kontrolü yapar.
+    """
+    logger.info("🔄 Trade Manager başlatıldı - pozisyon takibi aktif")
+    
+    while True:
+        try:
+            from main_orchestrator import open_positions_lock
+            
+            # Pozisyonları güvenli şekilde oku (YENİ: context manager)
+            with open_positions_lock:
+                with get_db_session() as db:  # YENİ
+                    open_positions = db.query(OpenPosition).all()
+                    positions_data = [
+                        {
+                            'id': pos.id,
+                            'symbol': pos.symbol,
+                            'direction': pos.direction,
+                            'entry_price': pos.entry_price,
+                            'sl_price': pos.sl_price,
+                            'tp_price': pos.tp_price,
+                            'position_size': pos.position_size,
+                            'planned_risk_percent': pos.planned_risk_percent,
+                            'quality_grade': pos.quality_grade
+                        }
+                        for pos in open_positions
+                    ]
+            
+            # Lock dışında fiyat kontrolü yap (Binance API çağrıları yavaş)
+            for pos_data in positions_data:
+                try:
+                    current_price = get_current_price(pos_data['symbol'])
+                    if current_price is None:
+                        continue
+                    
+                    should_close = False
+                    close_reason = ""
+                    
+                    # SL/TP kontrolü (orijinal algoritma)
+                    if pos_data['direction'] == 'LONG':
+                        if current_price <= pos_data['sl_price']:
+                            should_close = True
+                            close_reason = "SL"
+                        elif current_price >= pos_data['tp_price']:
+                            should_close = True
+                            close_reason = "TP"
+                    else:  # SHORT
+                        if current_price >= pos_data['sl_price']:
+                            should_close = True
+                            close_reason = "SL"
+                        elif current_price <= pos_data['tp_price']:
+                            should_close = True
+                            close_reason = "TP"
+                    
+                    if should_close:
+                        # Pozisyon kapatma işlemi lock içinde
+                        with open_positions_lock:
+                            close_position(pos_data['id'], current_price, close_reason)
+                
+                except Exception as e:
+                    logger.error(f"❌ {pos_data['symbol']} pozisyon kontrolünde hata: {e}", exc_info=True)
+                    continue
+            
+            time.sleep(config.TRADE_MANAGER_SLEEP_SECONDS)
+        
+        except Exception as e:
+            logger.error(f"❌ Trade manager döngüsünde kritik hata: {e}", exc_info=True)
+            time.sleep(30)  # Hata durumunda biraz bekle
+
+def close_position(position_id: int, exit_price: float, reason: str):
+    """
+    Pozisyonu kapatır ve trade history'ye taşır.
+    """
+    with get_db_session() as db:  # YENİ: context manager kullan
+        position = db.query(OpenPosition).filter_by(id=position_id).first()
+        
+        if not position:
+            logger.warning(f"Kapatılacak pozisyon bulunamadı: ID={position_id}")
+            return
+        
+        # PnL hesaplama (orijinal mantık korunuyor)
+        if position.direction == 'LONG':
+            pnl_usd = (exit_price - position.entry_price) * position.position_size
+        else:
+            pnl_usd = (position.entry_price - exit_price) * position.position_size
+        
+        pnl_percent = (pnl_usd / (position.entry_price * position.position_size)) * 100
+        
+        # Trade history'ye kaydet
+        trade_history = TradeHistory(
+            symbol=position.symbol,
+            direction=position.direction,
+            entry_price=position.entry_price,
+            exit_price=exit_price,
+            sl_price=position.sl_price,
+            tp_price=position.tp_price,
+            position_size_units=position.position_size,
+            pnl_usd=pnl_usd,
+            pnl_percent=pnl_percent,
+            close_reason=reason,
+            signal_time=position.signal_time,
+            close_time=datetime.now(),
+            quality_grade=position.quality_grade,
+            planned_risk_percent=position.planned_risk_percent
+        )
+        db.add(trade_history)
+        
+        # Açık pozisyonu sil
+        db.delete(position)
+        # commit otomatik (context manager)
+    
+    # Telegram bildirimi
+    send_position_closed_alert(trade_history)
+    
+    logger.info(f"{'🟢' if pnl_usd > 0 else '🔴'} Pozisyon kapatıldı: {position.symbol} {reason} | PnL: ${pnl_usd:.2f} ({pnl_percent:.2f}%)")
+
+# --- Gerçek Emir Fonksiyonları (Yeni) ---
+
+def place_real_order(signal_data):
+    """
+    Binance'de gerçek emir aç (OCO emri: TP ve SL birlikte)
+    """
+    if not ENABLE_REAL_TRADING:
+        logger.warning("ENABLE_REAL_TRADING=False - Sadece simülasyon modu")
+        return None
+    
+    try:
+        symbol = signal_data['symbol']
+        side = 'BUY' if signal_data['direction'] == 'LONG' else 'SELL'
+        quantity = signal_data['quantity']  # calculate_risk_and_size()'dan gelen
+        entry_price = signal_data['entry_price']
+        tp_price = signal_data['tp_price']
+        sl_price = signal_data['sl_price']
+        
+        # 1. Ana pozisyon emri (Market veya Limit)
+        entry_order = binance_client.order_limit(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=str(entry_price),
+            timeInForce='GTC'
+        )
+        
+        logger.info(f"✅ Giriş emri yerleştirildi: {entry_order['orderId']}")
+        
+        # 2. OCO emri (Take Profit + Stop Loss)
+        # LONG için: TP üstte LIMIT SELL, SL altta STOP_LOSS_LIMIT SELL
+        # SHORT için: TP altta LIMIT BUY, SL üstte STOP_LOSS_LIMIT BUY
+        
+        if signal_data['direction'] == 'LONG':
+            oco_side = 'SELL'
+            price = str(tp_price)
+            stop_price = str(sl_price)
+            stop_limit_price = str(sl_price * 0.995)  # %0.5 slippage
+        else:
+            oco_side = 'BUY'
+            price = str(tp_price)
+            stop_price = str(sl_price)
+            stop_limit_price = str(sl_price * 1.005)
+        
+        oco_order = binance_client.create_oco_order(
+            symbol=symbol,
+            side=oco_side,
+            quantity=quantity,
+            price=price,
+            stopPrice=stop_price,
+            stopLimitPrice=stop_limit_price,
+            stopLimitTimeInForce='GTC'
+        )
+        
+        logger.info(f"✅ OCO emri yerleştirildi: {oco_order['orderListId']}")
+        
+        return {
+            'entry_order_id': entry_order['orderId'],
+            'oco_order_list_id': oco_order['orderListId'],
+            'tp_order_id': oco_order['orders'][0]['orderId'],
+            'sl_order_id': oco_order['orders'][1]['orderId']
+        }
+        
+    except BinanceAPIException as e:
+        logger.error(f"❌ Binance emir hatası: {e}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"❌ Beklenmeyen hata: {e}", exc_info=True)
+        return None
+
+
+def cancel_oco_order(symbol, order_list_id):
+    """
+    OCO emrini iptal et (pozisyon manuel kapatılırsa)
+    """
+    try:
+        result = binance_client.cancel_order_list(
+            symbol=symbol,
+            orderListId=order_list_id
+        )
+        logger.info(f"✅ OCO emri iptal edildi: {order_list_id}")
+        return result
+    except Exception as e:
+        logger.error(f"❌ OCO iptal hatası: {e}", exc_info=True)
+        return None

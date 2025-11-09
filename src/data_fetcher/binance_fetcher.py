@@ -17,15 +17,11 @@ if src_path not in sys.path:
 
 # Yapılandırma dosyasını içe aktar
 try:
-    # GÜNCELLENDİ: Ana betik config'i import ettiği için burada tekrar etmeye gerek yok gibi
-    # Ancak API anahtarları SADECE burada kullanılıyorsa kalabilir.
-    # Eğer main_orchestrator'da da config import ediliyorsa, bu import gereksiz olabilir.
-    # Şimdilik bırakıyoruz.
-    from config import BINANCE_API_KEY, BINANCE_SECRET_KEY
+    from config import BINANCE_API_KEY, BINANCE_SECRET_KEY, BINANCE_TESTNET
 except ImportError:
     print("HATA: config.py bulunamadı veya içe aktarılamadı.")
     print("Lütfen projenin doğru klasörde olduğundan ve config.py'nin src içinde olduğundan emin olun!")
-    sys.exit(1) # Hata durumunda programdan çık.
+    sys.exit(1)
 
 # Loglamayı ayarla (Ana betik yapılandırıyorsa bu kısım atlanabilir veya geliştirilebilir)
 # GÜNCELLENDİ: Daha standart logger alma
@@ -42,9 +38,17 @@ if BINANCE_API_KEY and BINANCE_SECRET_KEY and \
    BINANCE_API_KEY != "YOUR_BINANCE_API_KEY_PLACEHOLDER" and \
    BINANCE_SECRET_KEY != "YOUR_BINANCE_SECRET_KEY_PLACEHOLDER":
     try:
-        # Timeout 10s → 20s (yavaş bağlantılar için)
-        binance_client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY, 
-                                requests_params={'timeout': 20})
+        # GÜNCELLENDİ (8 Kasım 2025): Testnet desteği eklendi
+        if BINANCE_TESTNET:
+            logger.info("⚠️ TESTNET MODUNDA - Binance Futures Testnet kullanılıyor")
+            binance_client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY, 
+                                    testnet=True,
+                                    requests_params={'timeout': 20})
+        else:
+            logger.warning("🔴 CANLI MOD - Gerçek Binance Futures API kullanılıyor!")
+            binance_client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY, 
+                                    requests_params={'timeout': 20})
+        
         binance_client.ping()
         logger.info("✅ Binance API istemcisi başarıyla başlatıldı ve bağlantı kuruldu.")
     except (BinanceAPIException, BinanceRequestException) as e:

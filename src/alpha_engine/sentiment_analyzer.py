@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # --- Veritabanı Modellerini Import Etme ---
 try:
-    from src.database.models import db_session, AlphaCache, init_db
+    from src.database.models import db_session, AlphaCache, init_db, get_db_session
 except ImportError as e:
     print(f"KRİTİK HATA: src/database/models.py import edilemedi! Hata: {e}")
     raise

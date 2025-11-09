@@ -8,6 +8,7 @@ from sqlalchemy.sql import func
 from datetime import datetime
 import sys
 import os
+from contextlib import contextmanager
 
 # Proje kökünü path'e ekle (config'i bulmak için)
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -99,18 +100,34 @@ class OpenPosition(Base):
     reddit_sentiment_at_signal = Column(Float, nullable=True)
     google_trends_score_at_signal = Column(Float, nullable=True)
     
-    # --- YENİ EKLENDİ (Aşama 3: Trailing Stop) ---
+    # --- YENİ EKLENDİ (Aşama 3: Gelişmiş Risk Yönetimi) ---
+    # İlk SL değeri (referans için saklanır)
+    initial_sl = Column(Float, nullable=True)
+    
+    # Trailing Stop
     trailing_stop_active = Column(Boolean, default=False)
+    trailing_stop_price = Column(Float, nullable=True)  # Güncel trailing stop fiyatı
     trailing_stop_distance = Column(Float, nullable=True) # Fiyattan ne kadar uzakta olacağı
-    # Pozisyonun ulaştığı en yüksek/düşük fiyatı (high water mark) saklamak,
-    # trailing stop'u doğru hesaplamak için çok önemlidir.
-    high_water_mark = Column(Float, nullable=True) 
+    high_water_mark = Column(Float, nullable=True)  # En yüksek/düşük fiyat (trailing için)
+    
+    # Kısmi Kar Alma (Partial TP)
+    partial_tp_1_price = Column(Float, nullable=True)  # İlk kısmi TP hedef fiyatı
+    partial_tp_1_filled = Column(Boolean, default=False)  # İlk kısmi TP alındı mı?
+    partial_tp_2_price = Column(Float, nullable=True)  # İkinci kısmi TP hedef fiyatı
+    partial_tp_2_filled = Column(Boolean, default=False)  # İkinci kısmi TP alındı mı?
+    
+    # Breakeven Hareket
+    breakeven_moved = Column(Boolean, default=False)  # SL breakeven'a taşındı mı?
+    
+    # Risk Takibi
+    current_risk_percent = Column(Float, nullable=True)  # Güncel risk yüzdesi
+    max_favorable_excursion = Column(Float, default=0.0)  # En yüksek kar (MFE)
+    max_adverse_excursion = Column(Float, default=0.0)  # En yüksek zarar (MAE)
     # -----------------------------------------------
     
-    # --- v4.0 Enhanced: Partial Profit Taking ---
-    partial_tp_1_price = Column(Float, nullable=True)  # İlk kısmi TP hedef fiyatı
+    # --- v4.0 Enhanced: Partial Profit Taking (ESKİ - yukarıdakilerle birleştirildi) ---
     partial_tp_1_percent = Column(Float, nullable=True)  # İlk kısmi TP'de kapatılacak pozisyon yüzdesi
-    partial_tp_1_taken = Column(Boolean, default=False)  # İlk kısmi TP alındı mı?
+    partial_tp_1_taken = Column(Boolean, default=False)  # ESKİ isim - partial_tp_1_filled ile aynı
     remaining_position_size = Column(Float, nullable=True)  # Kalan pozisyon boyutu
     # -----------------------------------------------
     
@@ -121,6 +138,20 @@ class OpenPosition(Base):
     tp_order_id = Column(BigInteger, nullable=True)  # Take Profit emri ID
     # -----------------------------------------------
 
+    # YENİ KOLONLAR - risk optimizasyonu için
+    volatility_score = Column(Float, nullable=True, comment="ATR bazlı volatilite skoru (0-1)")
+    sentiment_alignment = Column(Float, nullable=True, comment="Sinyal-sentiment uyum skoru (-1 ile 1)")
+    kelly_percent = Column(Float, nullable=True, comment="Kelly Criterion yüzdesi")
+    kelly_confidence = Column(String(10), nullable=True, comment="Kelly güven seviyesi: HIGH/MEDIUM/LOW/NONE")
+    risk_reasoning = Column(Text, nullable=True, comment="Risk hesaplama açıklaması")
+    
+    # Yeni kolonlar
+    entry_order_id = Column(String, nullable=True)  # Binance entry order ID
+    oco_order_list_id = Column(String, nullable=True)  # Binance OCO list ID
+    tp_order_id = Column(String, nullable=True)  # Take profit order ID
+    sl_order_id = Column(String, nullable=True)  # Stop loss order ID
+    order_status = Column(String, default='PENDING')  # PENDING, FILLED, CLOSED
+    
     def to_dict(self):
         """Objeyi sözlük formatına çevirir (eski kodla uyumluluk için)."""
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}
@@ -178,6 +209,28 @@ def init_db():
         logger.critical(f"   Kullanılan DATABASE_URL: {DATABASE_URL}")
         logger.critical(f"   Lütfen veritabanı yolunu ve dosya izinlerini kontrol edin.")
         sys.exit(1)
+
+@contextmanager
+def get_db_session():
+    """
+    Thread-safe DB session context manager.
+    Otomatik cleanup garantisi sağlar.
+    
+    Usage:
+        with get_db_session() as db:
+            positions = db.query(OpenPosition).all()
+            db.commit()  # Opsiyonel - context manager otomatik commit yapar
+    """
+    session = db_session()
+    try:
+        yield session
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        logger.error(f"DB session error: {e}", exc_info=True)
+        raise
+    finally:
+        db_session.remove()
 
 # Bu script doğrudan çalıştırıldığında tabloları oluşturur
 if __name__ == "__main__":

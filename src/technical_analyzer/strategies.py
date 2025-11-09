@@ -22,110 +22,123 @@ if not logger.hasHandlers():
 
 def determine_regime(df_1d: pd.DataFrame, df_4h: pd.DataFrame = None) -> str:
     """
-    Verilen 1D DataFrame'e göre (BTC veya herhangi bir coin) piyasa rejimini belirler.
-    v4.0 Enhanced: Yeni coinler için 4H fallback eklendi.
+    BTC 1D verisine bakarak piyasa rejimini belirler.
+    ADX ve BB Width değerlerine göre strateji modu döndürür.
     
     Args:
-        df_1d: 1 günlük timeframe DataFrame
-        df_4h: 4 saatlik timeframe DataFrame (opsiyonel, fallback için)
+        df_1d: BTC 1 günlük DataFrame (göstergelerle)
+        df_4h: BTC 4 saatlik DataFrame (fallback için, opsiyonel)
     
     Returns:
-        str: 'PULLBACK', 'MEAN_REVERSION', 'BREAKOUT', 'ADVANCED_SCALP', veya 'STOP'
+        'PULLBACK', 'MEAN_REVERSION', 'BREAKOUT', 'ADVANCED_SCALP' veya 'STOP'
     """
-    if df_1d is None or df_1d.empty:
-        logger.warning("⚠️ Rejim belirleme için DataFrame boş. 'STOP' varsayılıyor.")
-        return 'STOP'
+    # 1D veri kontrolü
+    if df_1d is None or df_1d.empty or len(df_1d) < 2:
+        logger.warning("BTC 1D DataFrame boş veya yetersiz, 4H fallback deneniyor...")
         
-    required_cols = ['adx14', 'bbw', 'close', 'sma200']
-    
-    # v4.0: Yeni coin kontrolü - 1D verisi yetersizse 4H'ye fallback
-    use_fallback = False
-    if not all(col in df_1d.columns for col in required_cols) or \
-       (not df_1d.empty and df_1d.iloc[-1][required_cols].isna().any()):
-        
-        if df_4h is not None and not df_4h.empty and len(df_4h) >= 50:
-            # 4H verisi yeterliyse onu kullan
-            if all(col in df_4h.columns for col in required_cols) and \
-               not df_4h.iloc[-1][required_cols].isna().any():
-                logger.info(f"ℹ️ 1D verisi yetersiz, 4H timeframe'den rejim belirleniyor (Yeni coin)")
-                df_1d = df_4h  # 4H'yi 1D gibi kullan
-                use_fallback = True
-            else:
-                logger.warning(f"⚠️ Hem 1D hem 4H verisi yetersiz. 'STOP' varsayılıyor.")
-                return 'STOP'
-        else:
-            logger.warning(f"⚠️ Rejim belirleme için DataFrame'de gerekli göstergeler eksik/NaN.")
+        # Fallback: 4H verisi
+        if df_4h is None or df_4h.empty or len(df_4h) < 2:
+            logger.warning("BTC 4H DataFrame de yetersiz, STOP moduna geçiliyor")
             return 'STOP'
-
-    last_row = df_1d.iloc[-1]
-    adx = last_row['adx14']
-    bbw = last_row['bbw']
-
-    trend_threshold = 25  # Güçlü trend (Pullback için)
-    chop_threshold = 20   # Trendin bittiği yer (diğer stratejiler için)
-    
-    bbw_period = 60; is_squeeze = False; bbw_avg = 0.0
-    if len(df_1d) > bbw_period:
-        historical_bbw = df_1d['bbw'].iloc[-bbw_period-1:-1]
-        if not historical_bbw.empty and not historical_bbw.isna().all():
-            bbw_avg = historical_bbw.mean()
-            bbw_min = historical_bbw.min()
-            is_squeeze = pd.notna(bbw_min) and bbw < (bbw_min * 1.1)
-        else: logger.debug("   Rejim: Sıkışma kontrolü için yeterli geçmiş BBW verisi yok (NaN).")
-    else: logger.debug("   Rejim: Sıkışma kontrolü için yeterli veri yok (60 günden az).")
-
-    strategy_mode = 'STOP'
-
-    if adx >= trend_threshold:
-        strategy_mode = 'PULLBACK'
-        logger.debug(f"   Rejim Hesaplandı: PULLBACK (ADX={adx:.1f} >= {trend_threshold})")
-    
-    elif adx < chop_threshold:
-        if is_squeeze:
-            strategy_mode = 'BREAKOUT'
-            logger.debug(f"   Rejim Hesaplandı: BREAKOUT (ADX={adx:.1f} < {chop_threshold}, BBW={bbw:.4f} Sıkışmada)")
-        elif bbw > 0 and bbw_avg > 0 and bbw > (bbw_avg * 1.1):
-             strategy_mode = 'MEAN_REVERSION'
-             logger.debug(f"   Rejim Hesaplandı: MEAN_REVERSION (ADX={adx:.1f} < {chop_threshold}, BBW={bbw:.4f} Genişlemede)")
         else:
-             # GÜNCELLENDİ: Burası artık 'Gelişmiş Scalping' bölgesi
-             strategy_mode = 'ADVANCED_SCALP'
-             logger.debug(f"   Rejim Hesaplandı: ADVANCED_SCALP (ADX={adx:.1f} < {chop_threshold}, BBW={bbw:.4f} Belirsiz/Daralma)")
+            # 4H ile devam et
+            df_to_use = df_4h
+            logger.info("📊 Regime belirleme 4H verisi ile yapılıyor")
+    else:
+        df_to_use = df_1d
     
-    else: # ADX, 20 ile 25 arasında (Geçiş Bölgesi)
-        strategy_mode = 'STOP'
-        logger.debug(f"   Rejim Hesaplandı: STOP (ADX={adx:.1f} Geçiş Bölgesi)")
-
-    return strategy_mode
+    required_cols = ['adx14', 'bbw']
+    if not all(col in df_to_use.columns for col in required_cols):
+        logger.warning(f"BTC verisinde gerekli kolonlar eksik: {required_cols}, STOP moduna geçiliyor")
+        return 'STOP'
+    
+    last = df_to_use.iloc[-1]
+    
+    # NaN kontrolü
+    if last[required_cols].isna().any():
+        logger.warning("BTC son bar'ında NaN değer var, STOP moduna geçiliyor")
+        return 'STOP'
+    
+    adx = last['adx14']
+    bbw = last['bbw']
+    
+    # Orijinal regime mantığı (algoritma korunuyor)
+    if adx > 25 and bbw > 0.04:
+        regime = 'BREAKOUT'
+    elif adx < 20 and bbw < 0.02:
+        regime = 'MEAN_REVERSION'
+    elif adx >= 30 and bbw > 0.05:
+        regime = 'ADVANCED_SCALP'
+    else:
+        regime = 'PULLBACK'
+    
+    logger.info(f"📊 BTC Regime: {regime} (ADX={adx:.2f}, BBW={bbw:.4f})")
+    return regime
 
 
 # --- Strateji Fonksiyonları ---
 
-def find_pullback_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.DataFrame, config: object) -> dict | None:
+def validate_dataframe(df: pd.DataFrame, required_columns: list, min_rows: int = 2) -> bool:
     """
-    v5.0 ULTRA-OPTIMIZED: Pullback stratejisi sıkılaştırıldı
+    DataFrame'in strateji için kullanılabilir olup olmadığını kontrol eder.
     
-    YAPILAN OPTİMİZASYONLAR:
-    1. RSI aralığı genişletildi: 30-50 → 25-55 (LONG), 50-70 → 45-75 (SHORT)
-    2. VWAP toleransı artırıldı: ±0.5% → ±1.0%
-    3. Ana trend konfirmasyonu güçlendirildi
+    Args:
+        df: Kontrol edilecek DataFrame
+        required_columns: Olması gereken kolon isimleri
+        min_rows: Minimum satır sayısı
     
-    HEDEF: %60-70 win rate
+    Returns:
+        True: Veri kullanılabilir, False: Veri eksik/hatalı
     """
-    logger.debug("ℹ️ v5.0 Pullback stratejisi çalıştırılıyor...")
-    signal = None
-    required_cols_1d_4h = ['close', 'ema50', 'sma200', 'supertrend_direction']
-    required_cols_1h = ['close', 'ema50', 'sma200', 'rsi14', 'macd_hist', 'atr14', 'volume', 'volume_sma20', 'vwap', 'supertrend_direction']
+    if df is None or df.empty:
+        logger.debug("DataFrame boş")
+        return False
     
-    if not all(col in df_1d.columns for col in required_cols_1d_4h) or \
-       not all(col in df_4h.columns for col in required_cols_1d_4h) or \
-       not all(col in df_1h.columns for col in required_cols_1h):
-        logger.warning("   Pullback: Gerekli gösterge sütunları eksik."); return None
+    if len(df) < min_rows:
+        logger.debug(f"DataFrame yetersiz veri: {len(df)} < {min_rows}")
+        return False
+    
+    # Kolon varlık kontrolü
+    missing_cols = [col for col in required_columns if col not in df.columns]
+    if missing_cols:
+        logger.debug(f"Eksik kolonlar: {missing_cols}")
+        return False
+    
+    # Son satırda NaN kontrolü
+    last_row = df.iloc[-1]
+    if last_row[required_columns].isna().any():
+        nan_cols = [col for col in required_columns if pd.isna(last_row[col])]
+        logger.debug(f"Son satırda NaN değer var: {nan_cols}")
+        return False
+    
+    return True
+
+def find_pullback_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.DataFrame, config) -> dict:
+    """
+    Pullback stratejisi - trend takibi ile geri çekilme alımı/satışı.
+    """
+    logger.info(f"   🔍 PULLBACK stratejisi kontrol ediliyor...")
+    
+    # Validasyon
+    required_1d = ['ema50', 'sma200']
+    required_4h = ['ema50', 'sma200']
+    required_1h = ['rsi14', 'macd_hist', 'sma200', 'close']
+    
+    if not validate_dataframe(df_1d, required_1d):
+        logger.warning(f"   PULLBACK REJECTED: 1D DataFrame validasyon başarısız")
+        return None
+    if not validate_dataframe(df_4h, required_4h):
+        logger.warning(f"   PULLBACK REJECTED: 4H DataFrame validasyon başarısız")
+        return None
+    if not validate_dataframe(df_1h, required_1h, min_rows=3):
+        logger.warning(f"   PULLBACK REJECTED: 1H DataFrame validasyon başarısız")
+        return None
+    
     try:
         last_1d = df_1d.iloc[-1]; last_4h = df_4h.iloc[-1]; last_1h = df_1h.iloc[-1]
-        if last_1d[required_cols_1d_4h].isna().any() or \
-           last_4h[required_cols_1d_4h].isna().any() or \
-           last_1h[required_cols_1h].isna().any():
+        if last_1d[required_1d].isna().any() or \
+           last_4h[required_4h].isna().any() or \
+           last_1h[required_1h].isna().any():
             logger.warning("   Pullback: Son mum verilerinde NaN var."); return None
 
         # 1. Ana Trend (Enhanced: Supertrend confirmation on higher TFs)
@@ -136,12 +149,12 @@ def find_pullback_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.Dat
         main_direction = None
         if trend_1d_bullish and trend_4h_bullish: 
             main_direction = 'LONG'
-            logger.debug("   Pullback: Ana Trend = LONG (EMA+SMA+Supertrend)")
+            logger.info("   ✅ Pullback: Ana Trend = LONG (EMA+SMA+Supertrend)")
         elif trend_1d_bearish and trend_4h_bearish: 
             main_direction = 'SHORT'
-            logger.debug("   Pullback: Ana Trend = SHORT (EMA+SMA+Supertrend)")
+            logger.info("   ✅ Pullback: Ana Trend = SHORT (EMA+SMA+Supertrend)")
         else: 
-            logger.debug("   Pullback: Ana Trend uyumsuz veya Supertrend çelişkili."); return None
+            logger.info("   Pullback REJECTED: Ana Trend uyumsuz veya Supertrend çelişkili."); return None
 
         # 2. v5.0: Geri Çekilme Onayı (RSI genişletildi, VWAP toleransı artırıldı)
         rsi_1h = last_1h['rsi14']; macd_hist_1h = last_1h['macd_hist']
@@ -153,18 +166,22 @@ def find_pullback_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.Dat
                 # v5.0: VWAP toleransı 0.5% → 1.0%
                 if close_1h >= vwap_1h * 0.99:  # ±1% tolerance
                     pullback_confirmed = True
-                    logger.debug(f"   ✅ LONG Pullback: RSI={rsi_1h:.1f}, MACD<0, Price near VWAP")
+                    logger.info(f"   ✅ LONG Pullback onaylandı: RSI={rsi_1h:.1f}, MACD<0, Price near VWAP")
                 else:
-                    logger.debug(f"   Pullback: Price too far below VWAP ({close_1h:.6f} vs {vwap_1h:.6f})")
+                    logger.info(f"   Pullback REJECTED: Price too far below VWAP ({close_1h:.6f} vs {vwap_1h:.6f})")
+            else:
+                logger.info(f"   Pullback REJECTED: RSI ({rsi_1h:.1f}) veya MACD ({macd_hist_1h:.4f}) uygun değil")
         elif main_direction == 'SHORT':
             # v5.0: RSI 50-70 → 45-75 (daha esnek)
             if (45 <= rsi_1h <= 75) and (macd_hist_1h >= 0):
                 # v5.0: VWAP toleransı 0.5% → 1.0%
                 if close_1h <= vwap_1h * 1.01:  # ±1% tolerance
                     pullback_confirmed = True
-                    logger.debug(f"   ✅ SHORT Pullback: RSI={rsi_1h:.1f}, MACD>0, Price near VWAP")
+                    logger.info(f"   ✅ SHORT Pullback onaylandı: RSI={rsi_1h:.1f}, MACD>0, Price near VWAP")
                 else:
-                    logger.debug(f"   Pullback: Price too far above VWAP ({close_1h:.6f} vs {vwap_1h:.6f})")
+                    logger.info(f"   Pullback REJECTED: Price too far above VWAP ({close_1h:.6f} vs {vwap_1h:.6f})")
+            else:
+                logger.info(f"   Pullback REJECTED: RSI ({rsi_1h:.1f}) veya MACD ({macd_hist_1h:.4f}) uygun değil")
         if not pullback_confirmed: logger.debug(f"   Pullback: Geri çekilme onaylanmadı."); return None
 
         # 3. 1H Supertrend Direction Check (must align with main trend)
@@ -195,26 +212,18 @@ def find_pullback_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.Dat
     except Exception as e: logger.error(f"   Pullback: Hata: {e}", exc_info=True); return None
     return signal
 
-def find_mean_reversion_signal(df_4h: pd.DataFrame, df_1h: pd.DataFrame, config: object) -> dict | None:
+def find_mean_reversion_signal(df_4h: pd.DataFrame, df_1h: pd.DataFrame, config) -> dict:
     """
-    v5.0 ULTRA-OPTIMIZED: Mean reversion stratejisi iyileştirildi
-    
-    YAPILAN OPTİMİZASYONLAR:
-    1. RSI eşikleri gevşetildi: 30/70 → 35/65 (daha erken giriş)
-    2. Trend filtresi eklendi: ADX > 30 ise mean reversion yapma
-    3. VWAP distance kontrolü optimize edildi
-    
-    HEDEF: %50-60 win rate (riskli strateji ama düzeltildi)
+    Mean reversion stratejisi - BB bantlarından dönüş sinyali.
     """
-    logger.debug("ℹ️ v5.0 Mean Reversion stratejisi çalıştırılıyor...")
-    signal = None
-    required_cols_4h = ['close', 'bb_upper', 'bb_lower', 'rsi14', 'atr14', 'vwap', 'adx14']  # v5.0: ADX eklendi
-    required_cols_1h = ['close', 'vwap', 'rsi14']
+    # Validasyon
+    required_4h = ['close', 'bb_upper', 'bb_lower', 'bb_middle']
+    required_1h = ['close', 'rsi14', 'macd_hist']
     
-    if not all(col in df_4h.columns for col in required_cols_4h):
-        logger.warning("   Mean Reversion: 4H'de gerekli göstergeler eksik."); return None
-    if not all(col in df_1h.columns for col in required_cols_1h):
-        logger.warning("   Mean Reversion: 1H'de gerekli göstergeler eksik."); return None
+    if not validate_dataframe(df_4h, required_4h):
+        return None
+    if not validate_dataframe(df_1h, required_1h, min_rows=3):
+        return None
     
     try:
         last_row_4h = df_4h.iloc[-1]
@@ -277,117 +286,117 @@ def find_mean_reversion_signal(df_4h: pd.DataFrame, df_1h: pd.DataFrame, config:
         return None
     return signal
 
-def find_breakout_signal(df_1h: pd.DataFrame, config: object) -> dict | None:
+def find_breakout_signal(df_1h: pd.DataFrame, config) -> dict:
     """
-    v5.0 ULTRA-OPTIMIZED: Breakout stratejisi iyileştirildi
-    
-    YAPILAN OPTİMİZASYONLAR:
-    1. Squeeze period 50 → 30 (daha sık sinyal)
-    2. Volume threshold 2.0x → 1.5x (daha gerçekçi)
-    3. Min ATR threshold 0.5% → 0.3% (düşük volatilitede de sinyal)
-    4. BBW quantile 0.10 → 0.15 (daha esnek squeeze tanımı)
-    
-    HEDEF: %60-70 win rate (yüksek momentum yakalama)
+    Breakout stratejisi - yüksek hacim ve volatilite ile kırılım.
     """
-    logger.debug("ℹ️ v5.0 Breakout stratejisi çalıştırılıyor...")
-    signal = None
-    required_cols = ['close', 'bb_upper', 'bb_lower', 'bbw', 'volume', 'atr14', 'volume_sma20']
-    if not all(col in df_1h.columns for col in required_cols):
-        logger.warning("   Breakout: Gerekli sütunlar eksik."); return None
+    logger.info(f"   🔍 BREAKOUT stratejisi kontrol ediliyor...")
+    
+    # Validasyon
+    required_1h = ['close', 'volume', 'sma200', 'bbw', 'adx14']
+    
+    if not validate_dataframe(df_1h, required_1h, min_rows=5):
+        logger.warning(f"   BREAKOUT REJECTED: DataFrame validasyon başarısız")
+        return None
+    
     try:
-        volume_ratio_col = 'volumeRatio' # Bu, indicators.py'de hesaplanmıyor, burada hesaplanıyor
-        volume_avg_period = 20
-        if volume_ratio_col not in df_1h.columns:
-            if len(df_1h) > volume_avg_period:
-                 avg_volume = df_1h['volume'].iloc[-(volume_avg_period+1):-1].mean(skipna=True)
-                 if avg_volume and avg_volume > 0: df_1h[volume_ratio_col] = df_1h['volume'] / avg_volume
-                 else: df_1h[volume_ratio_col] = 0.0
-            else: logger.warning(f"   Breakout: Hacim oranı için yetersiz veri."); df_1h[volume_ratio_col] = 0.0
+        # Hacim oranını hesapla (volume / volume_sma20)
+        if 'volume_sma20' in df_1h.columns and 'volume' in df_1h.columns:
+            df_1h['volumeRatio'] = df_1h['volume'] / df_1h['volume_sma20']
+        else:
+            logger.warning(f"   Breakout REJECTED: volume veya volume_sma20 eksik")
+            return None
 
         squeeze_period = 30  # v5.0: 50 → 30
         check_period = 3
-        if len(df_1h) < squeeze_period + check_period: logger.debug("   Breakout: Sıkışma kontrolü için yetersiz veri."); return None
+        if len(df_1h) < squeeze_period + check_period: 
+            logger.debug("   Breakout REJECTED: Sıkışma kontrolü için yetersiz veri."); 
+            return None
+        
         historical_bbw = df_1h['bbw'].iloc[-squeeze_period-check_period:-check_period]
-        if historical_bbw.empty or historical_bbw.isna().all(): logger.warning("   Breakout: Geçmiş BBW verisi yok/NaN."); return None
-        bbw_threshold = historical_bbw.quantile(0.15)  # v5.0: 0.10 → 0.15 (daha esnek)
+        if historical_bbw.empty or historical_bbw.isna().all(): 
+            logger.warning(f"   Breakout REJECTED: Geçmiş BBW verisi yok/NaN."); 
+            return None
+        
+        bbw_threshold = historical_bbw.quantile(0.25)  # v7.0: 0.15 → 0.25 (daha gevşek, daha fazla sıkışma tespit eder)
         recent_bbw = df_1h['bbw'].iloc[-check_period:]
         is_squeeze = pd.notna(recent_bbw).all() and (recent_bbw < bbw_threshold).all()
 
-        if not is_squeeze: logger.debug(f"   Breakout: Sıkışma yok."); return None
-        logger.debug(f"   Breakout: Sıkışma tespit edildi!")
+        if not is_squeeze: 
+            logger.debug(f"   Breakout REJECTED: Sıkışma yok (Recent BBW min={recent_bbw.min():.4f}, threshold={bbw_threshold:.4f})"); 
+            return None
         
-        last_row = df_1h.iloc[-1]
-        required_last = ['close', 'bb_upper', 'bb_lower', volume_ratio_col, 'atr14', 'supertrend_direction']
-        if last_row[required_last].isna().any(): logger.debug(f"   Breakout: Son mumda NaN var."); return None
+        logger.info(f"   ✅ Breakout: Sıkışma tespit edildi! (BBW < {bbw_threshold:.4f})")
+        
+        # SON MUM YERİNE SON TAMAMLANMIŞ MUMU KULLAN (açık mum yanıltıcı)
+        if len(df_1h) < 2:
+            logger.warning(f"   Breakout REJECTED: Yetersiz veri (< 2 mum)")
+            return None
+        
+        last_row = df_1h.iloc[-2]  # -2 = Son tamamlanmış mum
+        required_last = ['close', 'bb_upper', 'bb_lower', 'volumeRatio', 'atr14', 'supertrend_direction']
+        if last_row[required_last].isna().any(): 
+            logger.info(f"   Breakout REJECTED: Son tamamlanmış mumda NaN var."); 
+            return None
         
         close = last_row['close']; bb_upper = last_row['bb_upper']; bb_lower = last_row['bb_lower']
-        volume_ratio = last_row[volume_ratio_col]
+        volume_ratio = last_row['volumeRatio']
         supertrend_direction = last_row['supertrend_direction']
-        volume_threshold = 1.5  # v5.0: getattr(config, 'BREAKOUT_VOL_RATIO_MIN', 2.0) → 1.5
+        volume_threshold = getattr(config, 'BREAKOUT_VOL_RATIO_MIN', 1.5)
         
-        if not (volume_ratio > volume_threshold): logger.debug(f"   Breakout: Hacim yetersiz ({volume_ratio:.2f}x < {volume_threshold}x)."); return None
+        if not (volume_ratio > volume_threshold): 
+            logger.info(f"   Breakout REJECTED: Hacim yetersiz ({volume_ratio:.2f}x < {volume_threshold}x)."); 
+            return None
         
-        min_atr_percent = 0.3  # v5.0: getattr(config, 'MIN_ATR_PERCENT_BREAKOUT', 0.5) → 0.3
+        logger.info(f"   ✅ Breakout: Hacim OK ({volume_ratio:.2f}x > {volume_threshold}x)")
+        
+        min_atr_percent = getattr(config, 'MIN_ATR_PERCENT_BREAKOUT', 0.5)
         current_atr = last_row['atr14']
         atr_percent = (current_atr / close) * 100 if close > 0 else 0
         if atr_percent < min_atr_percent:
             logger.info(f"   Breakout REJECTED: Aşırı Düşük Volatilite (ATR={atr_percent:.2f}% < {min_atr_percent}%)")
             return None
         
+        logger.info(f"   ✅ Breakout: Volatilite OK (ATR={atr_percent:.2f}% > {min_atr_percent}%)")
+        
         # v4.0 Enhanced: Supertrend trend confirmation (maintained in v5.0)
         if close > bb_upper:
             if supertrend_direction != 1:
-                logger.info(f"   Breakout REJECTED: LONG breakout in downtrend (Supertrend=-1)")
+                logger.info(f"   Breakout REJECTED: LONG breakout in downtrend (Supertrend={supertrend_direction})")
                 return None
             signal = {'direction': 'LONG'}
-            logger.info(f"   ✅ Breakout LONG! (v5.0: Vol={volume_ratio:.2f}x, ATR={atr_percent:.2f}%, Supertrend Onaylı)")
+            logger.info(f"   ✅ Breakout LONG! (Vol={volume_ratio:.2f}x, ATR={atr_percent:.2f}%, Supertrend Onaylı)")
+            return signal
         elif close < bb_lower:
             if supertrend_direction != -1:
-                logger.info(f"   Breakout REJECTED: SHORT breakout in uptrend (Supertrend=1)")
+                logger.info(f"   Breakout REJECTED: SHORT breakout in uptrend (Supertrend={supertrend_direction})")
                 return None
             signal = {'direction': 'SHORT'}
-            logger.info(f"   ✅ Breakout SHORT! (v5.0: Vol={volume_ratio:.2f}x, ATR={atr_percent:.2f}%, Supertrend Onaylı)")
-        else: logger.debug(f"   Breakout: Kırılım koşulu sağlanmadı.")
+            logger.info(f"   ✅ Breakout SHORT! (Vol={volume_ratio:.2f}x, ATR={atr_percent:.2f}%, Supertrend Onaylı)")
+            return signal
+        else: 
+            logger.info(f"   Breakout REJECTED: Kırılım yok (Close={close:.4f} not > BB_Upper={bb_upper:.4f} or < BB_Lower={bb_lower:.4f}).")
+            return None
     except Exception as e: logger.error(f"   Breakout: Hata: {e}", exc_info=True); return None
-    return signal
 
 # --- YENİ EKLENDİ: Gelişmiş Scalp Stratejisi (Aşama 4) ---
 
-def find_advanced_scalp_signal(df_to_scan: pd.DataFrame, config: object) -> dict | None:
+def find_advanced_scalp_signal(df_scalp: pd.DataFrame, config) -> dict:
     """
-    v5.0 ULTRA-OPTIMIZED: Gelişmiş scalping stratejisi
-    
-    YAPILAN OPTİMİZASYONLAR:
-    1. RSI ranges gevşetildi: LONG 45-75 → 40-80, SHORT 25-55 → 20-60
-    2. Volume threshold 1.8x → 1.3x (daha sık sinyal)
-    3. Required conditions 6/8 → 5/8 (%75 → %62.5)
-    4. Max ATR 2.0% → 3.0% (daha volatil coinde de çalışır)
-    
-    NOT: Config'de SCALP_TIMEFRAME'i '15m' → '1h' değiştirin (funding maliyeti için)
-    
-    HEDEF: %55-65 win rate (hızlı giriş-çıkış)
+    Advanced Scalp stratejisi - kısa vadeli momentum.
     """
-    logger.debug("ℹ️ v5.0 Gelişmiş Scalp stratejisi çalıştırılıyor...")
-    signal = None
+    # Validasyon
+    required = ['close', 'rsi14', 'macd_hist', 'volume', 'ema20']
     
-    # Gerekli göstergeler (v4.0 güncellemesi)
-    required_cols = ['close', 'ema8', 'ema21', 'rsi14', 'macd', 'macd_signal', 'macd_hist', 
-                     'volume', 'volume_sma20', 'atr14']
-    optional_cols = ['vwap', 'supertrend_direction', 'stoch_rsi_signal']  # Yeni göstergeler
-    
-    if not all(col in df_to_scan.columns for col in required_cols):
-        logger.warning(f"   Advanced Scalp: Gerekli gösterge sütunları eksik. İhtiyaç: {required_cols}")
+    if not validate_dataframe(df_scalp, required, min_rows=3):
         return None
-        
-    if len(df_to_scan) < 2:
-        logger.warning("   Advanced Scalp: Kesişim kontrolü için yetersiz veri (< 2 mum)."); return None
-
+    
     try:
-        last_row = df_to_scan.iloc[-1]
-        prev_row = df_to_scan.iloc[-2]
+        last_row = df_scalp.iloc[-1]
+        prev_row = df_scalp.iloc[-2]
 
         # Son mumdaki değerlerde NaN kontrolü
-        if last_row[required_cols].isna().any() or prev_row[required_cols].isna().any():
+        if last_row[required].isna().any() or prev_row[required].isna().any():
             logger.debug("   Advanced Scalp: Son 2 mumda NaN değerler var."); return None
 
         # --- Strateji Koşullarını Oluştur (9 Koşul - 3 Yeni) ---
@@ -425,7 +434,7 @@ def find_advanced_scalp_signal(df_to_scan: pd.DataFrame, config: object) -> dict
         # --- YENİ v4.0 KOŞULLAR (v5.0'da korundu) ---
         
         # 6. VWAP Filtresi (Büyük oyuncular hangi tarafta?)
-        if 'vwap' in df_to_scan.columns and pd.notna(last_row.get('vwap')):
+        if 'vwap' in df_scalp.columns and pd.notna(last_row.get('vwap')):
             conditions['price_above_vwap'] = last_row['close'] > last_row['vwap']
             conditions['price_below_vwap'] = last_row['close'] < last_row['vwap']
         else:
@@ -433,7 +442,7 @@ def find_advanced_scalp_signal(df_to_scan: pd.DataFrame, config: object) -> dict
             conditions['price_below_vwap'] = True
         
         # 7. Supertrend Onayı (Trend yönü doğru mu?)
-        if 'supertrend_direction' in df_to_scan.columns and pd.notna(last_row.get('supertrend_direction')):
+        if 'supertrend_direction' in df_scalp.columns and pd.notna(last_row.get('supertrend_direction')):
             conditions['supertrend_bullish'] = last_row['supertrend_direction'] == 1
             conditions['supertrend_bearish'] = last_row['supertrend_direction'] == -1
         else:
@@ -441,7 +450,7 @@ def find_advanced_scalp_signal(df_to_scan: pd.DataFrame, config: object) -> dict
             conditions['supertrend_bearish'] = True
         
         # 8. Stochastic RSI Momentum Onayı
-        if 'stoch_rsi_signal' in df_to_scan.columns and pd.notna(last_row.get('stoch_rsi_signal')):
+        if 'stoch_rsi_signal' in df_scalp.columns and pd.notna(last_row.get('stoch_rsi_signal')):
             conditions['stoch_rsi_bullish'] = last_row['stoch_rsi_signal'] == 'BUY'
             conditions['stoch_rsi_bearish'] = last_row['stoch_rsi_signal'] == 'SELL'
         else:

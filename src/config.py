@@ -18,11 +18,17 @@ BOT_VERSION = "5.0-AutoPilot" # GÜNCELLENDİ: v5.0 Oto-Pilot Trading Engine
 
 # --- API Anahtarları ---
 # Testnet moduna göre key seçimi
-BINANCE_TESTNET_RAW = os.getenv("BINANCE_TESTNET", "True")
+# GÜNCELLENDİ (8 Kasım 2025): Varsayılan False (LIVE MODE)
+# Güvenlik: .env'de açıkça "True" yazılmadıkça LIVE mode kullanılır
+BINANCE_TESTNET_RAW = os.getenv("BINANCE_TESTNET", "False")
 BINANCE_TESTNET = BINANCE_TESTNET_RAW.lower() in ["true", "1", "yes"]
 
-# Debug log
+# Debug log - Trading mode kontrolü
 print(f"🔍 Config Debug: BINANCE_TESTNET_RAW='{BINANCE_TESTNET_RAW}' → BINANCE_TESTNET={BINANCE_TESTNET}")
+if BINANCE_TESTNET:
+    print("⚠️  TESTNET MODE AKTIF - Test parası kullanılıyor")
+else:
+    print("🔴 LIVE MODE AKTIF - GERÇEK PARA KULLANILIYOR!")
 
 if BINANCE_TESTNET:
     # Testnet mode - testnet keys kullan
@@ -80,60 +86,69 @@ AUTO_FUTURES_UPDATE_HOURS = int(os.getenv("AUTO_FUTURES_UPDATE_HOURS", 24))  # L
 # --- YENİ EKLENDİ: Hızlı Ön Filtreleme Ayarları (v4.0 Enhancement) ---
 # Taramaya dahil etmek için minimum 24 saatlik USDT hacmi
 # v5.0 ULTRA-OPTIMIZED: Ön filtreleme sıkılaştırıldı
-PRE_SCREEN_MIN_VOLUME_USD = float(os.getenv("PRE_SCREEN_MIN_VOLUME_USD", 5_000_000)) # 5M → Likidite garantisi
+PRE_SCREEN_MIN_VOLUME_USD = float(os.getenv("PRE_SCREEN_MIN_VOLUME_USD", 1_500_000)) # 5M → Likidite garantisi
 # Taramaya dahil etmek için minimum 24 saatlik mutlak fiyat değişimi yüzdesi
-PRE_SCREEN_MIN_PRICE_CHANGE_PERCENT = float(os.getenv("PRE_SCREEN_MIN_PRICE_CHANGE_PERCENT", 2.5)) # %2.5 → Anlamlı hareket
+PRE_SCREEN_MIN_PRICE_CHANGE_PERCENT = float(os.getenv("PRE_SCREEN_MIN_PRICE_CHANGE_PERCENT", 1.5)) # %2.5 → Anlamlı hareket
 # Filtreleme modu: 'AND' (hem hacim hem değişim) veya 'OR' (en az biri)
-PRE_SCREEN_FILTER_MODE = os.getenv("PRE_SCREEN_FILTER_MODE", "AND")  # v5.0: AND modu (ikisi de gerekli)
+PRE_SCREEN_FILTER_MODE = os.getenv("PRE_SCREEN_FILTER_MODE", "OR")  # v5.0: AND modu (ikisi de gerekli)
 # -----------------------------------------------------------
 
-# --- Portföy ve Risk Ayarları ---
-# v6.0 FIXED RISK SYSTEM: Sabit risk yaklaşımı (7 Kasım 2025)
+# --- Risk Yönetimi (v8.0 HİBRİT SİSTEM) ---
+USE_FIXED_RISK_USD = True  # True: Sabit risk ($), False: Portföy yüzdesi
 USE_REAL_BALANCE = os.getenv("USE_REAL_BALANCE", "True").lower() == "true"  # Gerçek bakiyeyi Binance'den al
-VIRTUAL_PORTFOLIO_USD = float(os.getenv("VIRTUAL_PORTFOLIO_USD", 200.0))  # Sanal portföy (USE_REAL_BALANCE=False ise)
 
-# YENİ: Sabit Risk Sistemi
-USE_FIXED_RISK_USD = os.getenv("USE_FIXED_RISK_USD", "True").lower() == "true"  # Sabit risk modu
-FIXED_RISK_USD = float(os.getenv("FIXED_RISK_USD", 5.0))  # Her işlemde maksimum $5 risk
-MAX_POSITION_VALUE_USD = float(os.getenv("MAX_POSITION_VALUE_USD", 300.0))  # Pozisyon değeri limiti (dar SL için yeterli)
+# 🎯 HİBRİT SİSTEM: Sabit risk + Pozisyon değeri limiti
+# Hedef Risk: $5 maksimum zarar/pozisyon
+# Pozisyon Değeri: $50 sert limit (dinamik kaldıraçla)
+# Kaldıraç: SL mesafesine göre dinamik (3x-10x arası)
+# 
+# Çalışma Mantığı:
+# - Geniş SL (%10): Risk $5 → Pozisyon $50 ✅ → Kaldıraç düşük (3x)
+# - Dar SL (%1): Risk $5 → Pozisyon $500 → Limit $50'ye düşer → Risk ~$0.50 (güvenli)
+FIXED_RISK_USD = float(os.getenv('FIXED_RISK_USD', '5.0'))  # Her işlemde maksimum $5 zarar riski (hedef)
+MAX_POSITION_VALUE_USD = float(os.getenv('MAX_POSITION_VALUE_USD', '50.0'))  # Pozisyon değeri sert limiti
 
-# ESKİ SİSTEM (USE_FIXED_RISK_USD=False ise kullanılır)
-BASE_RISK_PERCENT = float(os.getenv("BASE_RISK_PERCENT", 10.0))  # %10 = $20 POZİSYON DEĞERİ (kaldıraç dahil)
+BASE_RISK_PERCENT = 1.0  # Varsayılan %1 risk (dinamik sistem kapalıysa)
 
-MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", 15))  # Maksimum 15 pozisyon
-MAX_RISK_PER_GROUP = float(os.getenv("MAX_RISK_PER_GROUP", 30.0))  # Grup başı %30 risk (10-12 pozisyon/grup)
-# v6.0: 15% → 30% (Her gruptan daha fazla pozisyon alabilmek için)
-# Hesaplama: 30% ÷ 2.65% (pozisyon riski) ≈ 11 pozisyon/grup
-MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 2.0))
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", 3))  # Maksimum 3 eşzamanlı pozisyon
+MAX_RISK_PER_GROUP = float(os.getenv("MAX_RISK_PER_GROUP", 10.0))  # v8.0 UPDATED: Grup bazlı risk limiti (2 pozisyon/grup için)
+USE_KELLY_ADJUSTMENT = os.getenv("USE_KELLY_ADJUSTMENT", "True").lower() == "true"  # v7.0 NEW: Kelly Criterion pozisyon limitleme
+# v8.0 UPDATED: R:R = 2.0 (TP1 hedefe göre ayarlandı)
+MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 1.8))  # Minimum kabul edilebilir R:R oranı (TP1: 2.0, güvenlik marjı ile 1.8)
 MAX_POSITIONS_PER_SYMBOL = int(os.getenv("MAX_POSITIONS_PER_SYMBOL", 1))
 
 # --- v5.0 AUTO-PILOT: Sermaye Yönetimi (Capital Manager) ---
 MAX_DRAWDOWN_PERCENT = float(os.getenv("MAX_DRAWDOWN_PERCENT", -50.0))  # Devre kesici limiti (%)
-PROFIT_TARGET_PERCENT = float(os.getenv("PROFIT_TARGET_PERCENT", 50.0))  # Kâr realizasyonu hedefi (%)
+PROFIT_TARGET_PERCENT = float(os.getenv("PROFIT_TARGET_PERCENT", 40.0))  # Kâr realizasyonu hedefi (%)
 AUTO_CLOSE_ON_CIRCUIT_BREAKER = os.getenv("AUTO_CLOSE_ON_CIRCUIT_BREAKER", "False").lower() == "true"  # ⚠️ TEHLİKELİ!
 AUTO_TRANSFER_PROFIT = os.getenv("AUTO_TRANSFER_PROFIT", "False").lower() == "true"  # Otomatik kâr transferi
 # -----------------------------------------------------------
 
-# --- v6.0 UPDATED: SABİT Kaldıraç Sistemi (7 Kasım 2025) ---
-# Yüzde tabanlı SL sistemi (%10 sabit) ile uyumlu
-FUTURES_LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", 8))  # SABİT 8x kaldıraç
+# --- v8.0 DİNAMİK Kaldıraç Sistemi ---
+# Dinamik kaldıraç AKTİF - SL mesafesine göre otomatik ayarlama
 
-# Dinamik kaldıraç devre dışı (yüzde bazlı SL ile uyumsuz)
-DYNAMIC_LEVERAGE_ENABLED = False
+# v8.0 UPDATED: Dinamik kaldıraç sistemi aktif
+DYNAMIC_LEVERAGE_ENABLED = os.getenv("DYNAMIC_LEVERAGE_ENABLED", "True").lower() == "true"
 
-# ESKİ DİNAMİK SİSTEM (kapalı - referans için tutuldu)
+# Varsayılan kaldıraç (dinamik sistem kapalıysa kullanılır)
+# Dinamik sistemde bu değer referans olarak kullanılır
+FUTURES_LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", 8))  # Varsayılan 8x kaldıraç
+
+# DİNAMİK SİSTEM: SL mesafesine göre kaldıraç seçimi
+# Örnek: SL %1 dar → 10x kaldıraç, SL %10 geniş → 3x kaldıraç
 LEVERAGE_BY_SL_DISTANCE = {
-    0.02: 10,  # SL %2 mesafede  → 10x kaldıraç (tasfiye %10, güvenlik %8)
-    0.05: 5,   # SL %5 mesafede  → 5x kaldıraç (tasfiye %20, güvenlik %15)
-    0.10: 3,   # SL %10 mesafede → 3x kaldıraç (tasfiye %33, güvenlik %23)
-    0.15: 2    # SL %15 mesafede → 2x kaldıraç (tasfiye %50, güvenlik %35)
+    0.010: 10,  # SL mesafesi %1'den dar ise → 10x kaldıraç
+    0.018: 8,   # SL mesafesi %1.8'den dar ise → 8x kaldıraç  
+    0.030: 5,   # SL mesafesi %3'den dar ise → 5x kaldıraç
+    0.050: 4,   # SL mesafesi %5'den dar ise → 4x kaldıraç
+    0.100: 3    # SL mesafesi %10'dan geniş ise → 3x kaldıraç
 }
 MINIMUM_SAFETY_MARGIN = 0.08  # SL ile tasfiye arası minimum %8 mesafe
 
-# ESKİ SİSTEM (yedek - volatilite bazlı)
-LEVERAGE_LOW_VOLATILITY = 10
-LEVERAGE_MID_VOLATILITY = 5
-LEVERAGE_HIGH_VOLATILITY = 3
+# VOLATİLİTE BAZLI YEDEK SİSTEM (dinamik sistem kapalıysa)
+LEVERAGE_LOW_VOLATILITY = 8   # Düşük volatilite (ATR/Price < %5)
+LEVERAGE_MID_VOLATILITY = 5   # Orta volatilite (ATR/Price %5-15)
+LEVERAGE_HIGH_VOLATILITY = 3  # Yüksek volatilite (ATR/Price > %15)
 # ----------------------------------------------------------------
 
 # SL/TP Hesaplama Ayarları
@@ -160,12 +175,13 @@ VOLATILITY_HIGH_MULTIPLIER = 0.7  # Yüksek volatilitede pozisyon boyutunu %30 a
 # ---------------------------------------------------------
 
 # --- v6.0 SIMPLIFIED: Yüzde Tabanlı SL/TP Sistemi (7 Kasım 2025) ---
-# ESKİ SİSTEM: ATR tabanlı dinamik SL/TP → Karmaşık hesaplamalar
-# YENİ SİSTEM: Basit yüzde tabanlı → %10 zarar / %20-40 kar
+# Kaldıraçlı yüzde bazlı SL/TP sistemi
 USE_PERCENTAGE_SL_TP = True  # Yüzde tabanlı sistem kullan (ATR yerine)
 
-# Stop Loss: Pozisyon değerinin %10 zararında
-SL_PERCENT = float(os.getenv("SL_PERCENT", 10.0))  # %10 zarar
+# 🔧 HİBRİT SİSTEM İÇİN OPTİMİZE
+# Stop Loss: Pozisyon değerinin %10 zararında = $50 × 10% = $5 zarar
+# Hedef: $50 pozisyon, $5 maksimum kayıp
+SL_PERCENT = float(os.getenv("SL_PERCENT", 10.0))  # %10 zarar (pozisyon değeri bazında)
 
 # Take Profit: Kademeli sistem
 PARTIAL_TP_ENABLED = True  # Kısmi kar alma mekanizmasını aktifleştir
@@ -173,13 +189,24 @@ PARTIAL_TP_1_PERCENT = 50.0  # İlk kısmi TP'de pozisyonun %50'si kapatılır
 PARTIAL_TP_1_PROFIT_PERCENT = 20.0  # İlk TP: Pozisyon değerinin %20 karı (2.0 R:R)
 PARTIAL_TP_2_PROFIT_PERCENT = 40.0  # İkinci TP: Pozisyon değerinin %40 karı (4.0 R:R)
 
-# Hesaplama Örneği:
-# Pozisyon: $100 (kaldıraç dahil)
-# SL: -$10 (pozisyon değerinin %10'u)
-# TP_1: +$20 (pozisyon değerinin %20'si) → %50 pozisyon kapat
-# TP_2: +$40 (pozisyon değerinin %40'ı) → Kalan %50 kapat
-# R:R_1 = 20/10 = 2.0, R:R_2 = 40/10 = 4.0
+# Hesaplama Örneği (Dinamik Kaldıraç - HİBRİT SİSTEM):
+# Pozisyon Değeri: $50 (sabit limit)
+# SL: -$5 (pozisyon değerinin %10'u) = Her pozisyonda maks kayıp
+# TP_1: +$10 (pozisyon değerinin %20'si) → %50 pozisyon kapat → R:R = 2.0
+# TP_2: +$20 (pozisyon değerinin %40'ı) → Kalan %50 kapat → R:R = 4.0
+# 
+# HİBRİT SİSTEM ÖZELLİKLERİ:
+# • Pozisyon Değeri: $50 sabit (MAX_POSITION_VALUE_USD limiti)
+# • Risk: Hedef $5, dar SL'de otomatik azalır
+# • Kaldıraç: SL mesafesine göre dinamik (3x-10x)
+# • Max 3 pozisyon = $150 toplam pozisyon değeri, $15 maksimum risk
 # ---------------------------------------------------------
+
+# --- v7.0: Korelasyon Bazlı Rejim Seçimi ---
+BTC_CORRELATION_THRESHOLD = float(os.getenv("BTC_CORRELATION_THRESHOLD", 0.5))
+# 0.5'den yüksek korelasyonlu coinler BTC'nin rejimini takip eder
+# 0.5'den düşük olanlar kendi ADX/BBW verilerine göre karar verir
+# Grup bazlı eşikler için CORRELATION_THRESHOLDS kullanılabilir
 
 # Strateji Filtre Ayarları
 MAX_ATR_PERCENT = float(os.getenv("MAX_ATR_PERCENT", 5.0))
@@ -199,13 +226,13 @@ QUALITY_MULTIPLIERS = { 'A': 1.3, 'B': 1.1, 'C': 0.9, 'D': 0.0 }
 # ESKİ SİSTEM: ATR tabanlı (USE_PERCENTAGE_SL_TP=False ise kullanılır)
 SL_ATR_MULTIPLIER = float(os.getenv("SL_ATR_MULTIPLIER", 2.0))
 TP_ATR_MULTIPLIER = float(os.getenv("TP_ATR_MULTIPLIER", 3.5)) 
-MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 2.0))  # Minimum kabul edilebilir R:R oranı 
+# MIN_RR_RATIO zaten yukarıda tanımlandı (satır 117)
 
 # Strateji Filtre Ayarları
 MAX_ATR_PERCENT = float(os.getenv("MAX_ATR_PERCENT", 5.0)) 
-MIN_ATR_PERCENT_BREAKOUT = float(os.getenv("MIN_ATR_PERCENT_BREAKOUT", 0.5))
-PULLBACK_VOL_RATIO_LIMIT = float(os.getenv("PULLBACK_VOL_RATIO_LIMIT", 2.0))
-BREAKOUT_VOL_RATIO_MIN = float(os.getenv("BREAKOUT_VOL_RATIO_MIN", 2.0))
+MIN_ATR_PERCENT_BREAKOUT = float(os.getenv("MIN_ATR_PERCENT_BREAKOUT", 0.3))
+PULLBACK_VOL_RATIO_LIMIT = float(os.getenv("PULLBACK_VOL_RATIO_LIMIT", 4.0))
+BREAKOUT_VOL_RATIO_MIN = float(os.getenv("BREAKOUT_VOL_RATIO_MIN", 1.1))  # v7.0: 1.3 → 1.1 (daha fazla sinyal)
 
 # --- v5.0 ULTRA-OPTIMIZED: Gelişmiş Scalp Strateji Ayarları ---
 # v5.0: 15m → 1h (funding maliyeti azaltmak için)
@@ -342,6 +369,32 @@ STRATEGY_REQUIRED_INDICATORS = {
     'STOP': {}
 }
 
+# ============================================================
+# ADVANCED RISK MANAGEMENT SETTINGS
+# ============================================================
+
+# Dinamik risk limitleri
+MAX_POSITION_RISK = 4.0  # Maksimum risk yüzdesi (yüksek kaliteli sinyaller için)
+MIN_POSITION_RISK = 0.5  # Minimum risk yüzdesi (düşük kaliteli sinyaller için)
+
+# Kelly Criterion ayarları
+USE_FRACTIONAL_KELLY = True  # Fractional Kelly kullan (güvenli)
+KELLY_FRACTION = 0.25  # Kelly sonucunu bu oranla çarp (%25 Kelly)
+MIN_KELLY_CONFIDENCE_THRESHOLD = 'LOW'  # Minimum kabul edilebilir Kelly güven seviyesi
+
+# Volatilite bazlı ayarlamalar
+VOLATILITY_ADJUSTMENT_ENABLED = True  # Volatiliteye göre risk ayarlama
+HIGH_VOLATILITY_THRESHOLD = 0.6  # Bu değerin üstü "yüksek volatilite"
+LOW_VOLATILITY_THRESHOLD = 0.3  # Bu değerin altı "düşük volatilite"
+
+# Sentiment alignment ayarları
+SENTIMENT_ALIGNMENT_WEIGHT = 1.0  # Sentiment uyumunun risk hesabındaki ağırlığı
+NEGATIVE_SENTIMENT_PENALTY = 0.7  # Ters sentiment durumunda risk çarpanı
+
+# Korelasyon grubu optimizasyonu
+GROUP_EXPOSURE_WEIGHT = 1.0  # Grup doluluk oranının risk hesabındaki ağırlığı
+DIVERSIFICATION_BONUS = 1.1  # Boş gruplara verilen risk çarpan bonusu
+
 # --- v4.0 Enhanced: Otomatik Korelasyon Grubu Ataması ---
 def auto_assign_correlation_group(symbol: str) -> str:
     """
@@ -417,3 +470,24 @@ def auto_assign_correlation_group(symbol: str) -> str:
 
 
 print("Config: Tüm yapılandırma değişkenleri yüklendi.")
+
+# ⚠️ GERÇek TRADING AKTİFLEŞTİRME - SADECE TEST EDİLDİKTEN SONRA True YAP
+ENABLE_REAL_TRADING = os.getenv('ENABLE_REAL_TRADING', 'False').lower() == 'true'
+
+# Gerçek trading için minimum test gereksinimleri
+# GÜNCELLENDİ (8 Kasım 2025): Print kullan (logger henüz import edilmedi)
+if ENABLE_REAL_TRADING:
+    print("=" * 60)
+    print("🚨 GERÇEK TRADING MODU AKTİF!")
+    print("Binance hesabınızda GERÇEK emirler açılacak!")
+    print("=" * 60)
+    
+    # Test kontrolü
+    assert BINANCE_API_KEY and BINANCE_SECRET_KEY, "API anahtarları eksik!"
+    
+    # Testnet kontrolü (opsiyonel)
+    BINANCE_TESTNET_CHECK = os.getenv('BINANCE_TESTNET', 'False').lower() == 'true'
+    if BINANCE_TESTNET_CHECK:
+        print("⚠️ TESTNET modu aktif - Gerçek para kullanılmayacak")
+else:
+    print("ℹ️ Simülasyon modu - ENABLE_REAL_TRADING=False")

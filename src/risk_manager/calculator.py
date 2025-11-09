@@ -64,19 +64,33 @@ def calculate_structural_sl_tp(direction: str, entry_price: float, levels: dict,
 
 def calculate_percentage_sl_tp(entry_price: float, direction: str, config: object) -> Optional[Dict[str, float]]:
     """
-    Giriş fiyatına göre basit yüzde tabanlı SL/TP hesaplar.
+    Giriş fiyatına göre kaldıraçlı yüzde tabanlı SL/TP hesaplar.
     
-    Sistem:
-    - SL: Giriş fiyatından %10 uzakta (zarar)
-    - TP_1: Giriş fiyatından %20 uzakta (ilk %50 pozisyon)
-    - TP_2: Giriş fiyatından %40 uzakta (kalan %50 pozisyon)
+    Sistem (v7.0 DÜZELTME - Kaldıraç dikkate alınıyor):
+    - SL: Pozisyon değerinin %10 zararı = Spot fiyatın (10% / kaldıraç) mesafesi
+    - TP_1: Pozisyon değerinin %20 karı = Spot fiyatın (20% / kaldıraç) mesafesi
+    - TP_2: Pozisyon değerinin %40 karı = Spot fiyatın (40% / kaldıraç) mesafesi
     
-    R:R_1 = 2.0, R:R_2 = 4.0
+    Örnek (8x kaldıraç):
+    - SL: %10 pozisyon zararı = %1.25 spot fiyat hareketi
+    - TP_1: %20 pozisyon karı = %2.5 spot fiyat hareketi
+    - TP_2: %40 pozisyon karı = %5.0 spot fiyat hareketi
+    
+    R:R_1 = 2.0, R:R_2 = 4.0 (değişmez)
     """
     try:
-        sl_percent = getattr(config, 'SL_PERCENT', 10.0)
-        tp1_percent = getattr(config, 'PARTIAL_TP_1_PROFIT_PERCENT', 20.0)
-        tp2_percent = getattr(config, 'PARTIAL_TP_2_PROFIT_PERCENT', 40.0)
+        # Pozisyon bazlı yüzde değerleri
+        position_sl_percent = getattr(config, 'SL_PERCENT', 10.0)
+        position_tp1_percent = getattr(config, 'PARTIAL_TP_1_PROFIT_PERCENT', 20.0)
+        position_tp2_percent = getattr(config, 'PARTIAL_TP_2_PROFIT_PERCENT', 40.0)
+        
+        # Kaldıraç değeri
+        leverage = getattr(config, 'FUTURES_LEVERAGE', 8)
+        
+        # SPOT fiyat hareketi = Pozisyon hareketi / Kaldıraç
+        spot_sl_percent = position_sl_percent / leverage
+        spot_tp1_percent = position_tp1_percent / leverage
+        spot_tp2_percent = position_tp2_percent / leverage
         
         sl_price = 0.0
         tp1_price = 0.0
@@ -84,14 +98,14 @@ def calculate_percentage_sl_tp(entry_price: float, direction: str, config: objec
 
         if direction.upper() == 'LONG':
             # LONG: SL aşağıda, TP yukarıda
-            sl_price = entry_price * (1 - (sl_percent / 100.0))
-            tp1_price = entry_price * (1 + (tp1_percent / 100.0))
-            tp2_price = entry_price * (1 + (tp2_percent / 100.0))
+            sl_price = entry_price * (1 - (spot_sl_percent / 100.0))
+            tp1_price = entry_price * (1 + (spot_tp1_percent / 100.0))
+            tp2_price = entry_price * (1 + (spot_tp2_percent / 100.0))
         elif direction.upper() == 'SHORT':
             # SHORT: SL yukarıda, TP aşağıda
-            sl_price = entry_price * (1 + (sl_percent / 100.0))
-            tp1_price = entry_price * (1 - (tp1_percent / 100.0))
-            tp2_price = entry_price * (1 - (tp2_percent / 100.0))
+            sl_price = entry_price * (1 + (spot_sl_percent / 100.0))
+            tp1_price = entry_price * (1 - (spot_tp1_percent / 100.0))
+            tp2_price = entry_price * (1 - (spot_tp2_percent / 100.0))
         else:
             logger.error(f"Geçersiz yön: {direction}")
             return None
@@ -113,16 +127,16 @@ def calculate_percentage_sl_tp(entry_price: float, direction: str, config: objec
         rr1 = reward1_distance / risk_distance if risk_distance > 0 else 0
         rr2 = reward2_distance / risk_distance if risk_distance > 0 else 0
 
-        logger.info(f"   Yüzde Tabanlı SL/TP ({direction}): Giriş={entry_price:.4f}")
-        logger.info(f"   SL={sl_price:.4f} (-%{sl_percent}), TP1={tp1_price:.4f} (+%{tp1_percent}, R:R={rr1:.2f})")
-        logger.info(f"   TP2={tp2_price:.4f} (+%{tp2_percent}, R:R={rr2:.2f})")
+        logger.info(f"   Kaldıraçlı SL/TP ({direction}, {leverage}x): Giriş={entry_price:.4f}")
+        logger.info(f"   SL={sl_price:.4f} (-{spot_sl_percent:.2f}% spot = -{position_sl_percent}% pozisyon)")
+        logger.info(f"   TP1={tp1_price:.4f} (+{spot_tp1_percent:.2f}% spot = +{position_tp1_percent}% pozisyon, R:R={rr1:.2f})")
+        logger.info(f"   TP2={tp2_price:.4f} (+{spot_tp2_percent:.2f}% spot = +{position_tp2_percent}% pozisyon, R:R={rr2:.2f})")
         
         return {
             'sl_price': sl_price, 
             'tp_price': tp2_price,  # Ana TP (kalan %50 için)
             'partial_tp_1_price': tp1_price  # İlk kısmi TP
         }
-
     except Exception as e:
         logger.error(f"Yüzde tabanlı SL/TP hesaplanırken hata: {e}", exc_info=True)
         return None

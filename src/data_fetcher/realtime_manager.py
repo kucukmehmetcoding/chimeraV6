@@ -174,10 +174,20 @@ class RealTimeDataManager:
                             # Async generator'dan mesajları al
                             async def listen_socket():
                                 try:
-                                    async for msg in current_socket:
+                                    # ReconnectingWebsocket objesi recv_messages() ile async iterator sağlıyor
+                                    async for msg in current_socket.recv_messages():
                                         self._process_message(msg)
                                         if self.stop_event.is_set():
                                             break
+                                except AttributeError:
+                                    # Eski API compatibility: Direkt iterate et
+                                    try:
+                                        async for msg in current_socket:
+                                            self._process_message(msg)
+                                            if self.stop_event.is_set():
+                                                break
+                                    except TypeError as te:
+                                        logger.error(f"[WS] WebSocket async iterasyon hatası: {te}")
                                 except asyncio.CancelledError:
                                     logger.info("[WS] Socket listener task iptal edildi")
                                 except Exception as e:

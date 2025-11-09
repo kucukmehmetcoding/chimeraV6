@@ -306,11 +306,40 @@ class BinanceFuturesExecutor:
             logger.error(f"❌ Miktar yuvarlama hatası: {e}", exc_info=True)
             return quantity
     
+    def round_price(self, symbol: str, price: float) -> float:
+        """
+        Fiyatı sembol kurallarına göre yuvarlar.
+        
+        Args:
+            symbol: İşlem çifti
+            price: Yuvarlanacak fiyat
+        
+        Returns:
+            float: Yuvarlanmış fiyat
+        """
+        try:
+            symbol_info = self.get_symbol_info(symbol)
+            
+            if not symbol_info:
+                logger.warning(f"⚠️ {symbol} için sembol bilgisi yok, fiyat yuvarlanamadı")
+                return price
+            
+            price_precision = symbol_info.get('price_precision', 2)
+            
+            # Precision'a göre yuvarla
+            rounded = round(price, price_precision)
+            
+            return rounded
+            
+        except Exception as e:
+            logger.error(f"❌ Fiyat yuvarlama hatası: {e}", exc_info=True)
+            return price
+    
     # ==================== YAZMA FONKSİYONLARI (⚠️ DİKKAT: GERÇEK İŞLEMLER!) ====================
     
     def set_leverage(self, symbol: str, leverage: int) -> bool:
         """
-        Sembol için kaldıraç ayarlar.
+        Sembol için kaldıraç ayarlar ve doğrular.
         
         Args:
             symbol: İşlem çifti
@@ -327,7 +356,20 @@ class BinanceFuturesExecutor:
                 leverage=leverage
             )
             
-            logger.info(f"✅ {symbol} kaldıraç başarıyla {leverage}x olarak ayarlandı")
+            logger.info(f"✅ {symbol} kaldıraç ayarlama komutu gönderildi: {leverage}x")
+            
+            # 🆕 DOĞRULAMA: Kaldıraç gerçekten ayarlandı mı kontrol et
+            try:
+                position_info = self.client.futures_position_information(symbol=symbol)
+                if position_info and len(position_info) > 0:
+                    actual_leverage = int(position_info[0].get('leverage', 0))
+                    if actual_leverage == leverage:
+                        logger.info(f"   ✅ DOĞRULANDI: {symbol} Binance kaldıraç = {actual_leverage}x")
+                    else:
+                        logger.warning(f"   ⚠️ UYUMSUZLUK: İstenilen {leverage}x, Gerçek {actual_leverage}x")
+            except Exception as verify_e:
+                logger.debug(f"   ℹ️ Kaldıraç doğrulama yapılamadı: {verify_e}")
+            
             return True
             
         except BinanceAPIException as e:
