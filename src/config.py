@@ -88,10 +88,10 @@ AUTO_FUTURES_UPDATE_HOURS = int(os.getenv("AUTO_FUTURES_UPDATE_HOURS", 24))  # L
 
 # --- YENİ EKLENDİ: Hızlı Ön Filtreleme Ayarları (v4.0 Enhancement) ---
 # Taramaya dahil etmek için minimum 24 saatlik USDT hacmi
-# v5.0 ULTRA-OPTIMIZED: Ön filtreleme sıkılaştırıldı
-PRE_SCREEN_MIN_VOLUME_USD = float(os.getenv("PRE_SCREEN_MIN_VOLUME_USD", 1_500_000)) # 5M → Likidite garantisi
+# v8.4 AGGRESSIVE: Pre-screen gevşetildi (daha fazla coin taranacak)
+PRE_SCREEN_MIN_VOLUME_USD = float(os.getenv("PRE_SCREEN_MIN_VOLUME_USD", 500_000)) # 1.5M → 500K (3x daha fazla coin)
 # Taramaya dahil etmek için minimum 24 saatlik mutlak fiyat değişimi yüzdesi
-PRE_SCREEN_MIN_PRICE_CHANGE_PERCENT = float(os.getenv("PRE_SCREEN_MIN_PRICE_CHANGE_PERCENT", 1.5)) # %2.5 → Anlamlı hareket
+PRE_SCREEN_MIN_PRICE_CHANGE_PERCENT = float(os.getenv("PRE_SCREEN_MIN_PRICE_CHANGE_PERCENT", 1.0)) # 1.5% → 1.0%
 # Filtreleme modu: 'AND' (hem hacim hem değişim) veya 'OR' (en az biri)
 PRE_SCREEN_FILTER_MODE = os.getenv("PRE_SCREEN_FILTER_MODE", "OR")  # v5.0: AND modu (ikisi de gerekli)
 # -----------------------------------------------------------
@@ -100,21 +100,21 @@ PRE_SCREEN_FILTER_MODE = os.getenv("PRE_SCREEN_FILTER_MODE", "OR")  # v5.0: AND 
 USE_FIXED_RISK_USD = True  # True: Sabit risk ($), False: Portföy yüzdesi
 USE_REAL_BALANCE = os.getenv("USE_REAL_BALANCE", "True").lower() == "true"  # Gerçek bakiyeyi Binance'den al
 
-# 🎯 HİBRİT SİSTEM: Sabit risk + Pozisyon değeri limiti
-# Hedef Risk: $5 maksimum zarar/pozisyon
-# Pozisyon Değeri: $50 sert limit (dinamik kaldıraçla)
+# 🎯 v8.4 AGGRESSIVE SYSTEM: Margin artırıldı (3x)
+# Hedef Risk: $15 maksimum zarar/pozisyon (önceki: $5)
+# Pozisyon Değeri: $150 sert limit (önceki: $50)
 # Kaldıraç: SL mesafesine göre dinamik (3x-10x arası)
 # 
 # Çalışma Mantığı:
-# - Geniş SL (%10): Risk $5 → Pozisyon $50 ✅ → Kaldıraç düşük (3x)
-# - Dar SL (%1): Risk $5 → Pozisyon $500 → Limit $50'ye düşer → Risk ~$0.50 (güvenli)
-FIXED_RISK_USD = float(os.getenv('FIXED_RISK_USD', '5.0'))  # Her işlemde maksimum $5 zarar riski (hedef)
-MAX_POSITION_VALUE_USD = float(os.getenv('MAX_POSITION_VALUE_USD', '50.0'))  # Pozisyon değeri sert limiti
+# - Geniş SL (%10): Risk $15 → Pozisyon $150 ✅ → Kaldıraç düşük (3x)
+# - Dar SL (%1): Risk $15 → Pozisyon $1500 → Limit $150'ye düşer → Risk ~$1.50 (güvenli)
+FIXED_RISK_USD = float(os.getenv('FIXED_RISK_USD', '15.0'))  # Her işlemde maksimum $15 zarar riski (3x artış)
+MAX_POSITION_VALUE_USD = float(os.getenv('MAX_POSITION_VALUE_USD', '150.0'))  # Pozisyon değeri sert limiti (3x artış)
 
 BASE_RISK_PERCENT = 1.0  # Varsayılan %1 risk (dinamik sistem kapalıysa)
 
-MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", 3))  # Maksimum 3 eşzamanlı pozisyon
-MAX_RISK_PER_GROUP = float(os.getenv("MAX_RISK_PER_GROUP", 10.0))  # v8.0 UPDATED: Grup bazlı risk limiti (2 pozisyon/grup için)
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", 5))  # v8.4: 3 → 5 (agresif artış)
+MAX_RISK_PER_GROUP = float(os.getenv("MAX_RISK_PER_GROUP", 20.0))  # v8.4: 10.0 → 20.0 (2-3 pozisyon/grup için yeterli)
 USE_KELLY_ADJUSTMENT = os.getenv("USE_KELLY_ADJUSTMENT", "True").lower() == "true"  # v7.0 NEW: Kelly Criterion pozisyon limitleme
 # v8.0 UPDATED: R:R = 2.0 (TP1 hedefe göre ayarlandı)
 MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 1.8))  # Minimum kabul edilebilir R:R oranı (TP1: 2.0, güvenlik marjı ile 1.8)
@@ -217,12 +217,12 @@ MAX_ATR_PERCENT = float(os.getenv("MAX_ATR_PERCENT", 5.0))
 
 # --- v5.0 ULTRA-OPTIMIZED: Kalite Notu Risk Çarpanları ---
 # GÜNCELLENDİ (6 Kasım 2025): C-grade pozisyon boyutu problemi çözüldü
-# Eski: C = 0.5x (çok küçük pozisyonlar)
-# Yeni: C = 0.9x (normal pozisyonlar, minimal ceza)
-QUALITY_MULTIPLIERS = { 'A': 1.3, 'B': 1.1, 'C': 0.9, 'D': 0.0 }
-# A: %30 bonus (çok güçlü sinyaller)
-# B: %10 bonus (iyi sinyaller)
-# C: %10 ceza (orta seviye - çoğu sinyal burası)
+# v8.4 AGGRESSIVE: Quality multipliers agresifleştirildi
+# A: %100 bonus (çok güçlü sinyaller - 2x pozisyon)
+# B: %50 bonus (iyi sinyaller - 1.5x pozisyon)
+# C: Ceza yok (orta seviye - normal pozisyon)
+# D: Veto (zayıf sinyaller - hiç pozisyon açılmaz)
+QUALITY_MULTIPLIERS = { 'A': 2.0, 'B': 1.5, 'C': 1.0, 'D': 0.0 }
 # D: Tamamen iptal (sadece çok kötü sinyaller)
 
 # --- GÜNCELLENDİ: Dinamik SL/TP Ayarları (Aşama 3) ---
@@ -382,7 +382,7 @@ MIN_POSITION_RISK = 0.5  # Minimum risk yüzdesi (düşük kaliteli sinyaller i�
 
 # Kelly Criterion ayarları
 USE_FRACTIONAL_KELLY = True  # Fractional Kelly kullan (güvenli)
-KELLY_FRACTION = 0.25  # Kelly sonucunu bu oranla çarp (%25 Kelly)
+KELLY_FRACTION = 0.5  # Kelly sonucunu bu oranla çarp (%50 Kelly) - AGGRESSIVE
 MIN_KELLY_CONFIDENCE_THRESHOLD = 'LOW'  # Minimum kabul edilebilir Kelly güven seviyesi
 
 # Volatilite bazlı ayarlamalar
