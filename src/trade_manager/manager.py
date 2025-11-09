@@ -2,6 +2,7 @@
 
 import logging
 import time
+from datetime import datetime  # 🆕 FIX: datetime import ekle
 from threading import Lock, Event
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Dict, Tuple
@@ -12,9 +13,11 @@ try:
     from src.database.models import db_session, OpenPosition, TradeHistory, get_db_session  # YENİ import
     from src.data_fetcher.realtime_manager import RealTimeDataManager
     from src.notifications import telegram as telegram_notifier
+    from src.notifications.telegram import send_position_closed_alert  # 🆕 FIX: Eksik import
     from src import config
     # GÜNCELLENDİ: Binance fetcher'a fallback için ihtiyacımız var
     from src.data_fetcher import binance_fetcher
+    from src.data_fetcher.binance_fetcher import get_current_price  # 🆕 FIX: Eksik import
     # v5.0 AUTO-PILOT: Executor import
     from src.trade_manager.executor import get_executor
     from src.data_fetcher.binance_fetcher import binance_client
@@ -23,6 +26,9 @@ except ImportError as e:
     raise
 
 logger = logging.getLogger(__name__)
+
+# 🆕 FIX: Config'den ENABLE_REAL_TRADING al
+ENABLE_REAL_TRADING = getattr(config, 'ENABLE_REAL_TRADING', False)
 
 
 # --- PnL Hesaplama (Değişiklik Yok) ---
@@ -912,6 +918,7 @@ def monitor_positions_loop():
 def close_position(position_id: int, exit_price: float, reason: str):
     """
     Pozisyonu kapatır ve trade history'ye taşır.
+    🆕 v9.1 FIX: Artık Binance'de gerçekten pozisyon kapatıyor!
     """
     with get_db_session() as db:  # YENİ: context manager kullan
         position = db.query(OpenPosition).filter_by(id=position_id).first()
@@ -920,7 +927,40 @@ def close_position(position_id: int, exit_price: float, reason: str):
             logger.warning(f"Kapatılacak pozisyon bulunamadı: ID={position_id}")
             return
         
-        # PnL hesaplama (orijinal mantık korunuyor)
+        # 🆕 STEP 1: BİNANCE'DE GERÇEKTEKİ POZİSYONU KAPAT!
+        executor = get_executor()
+        if executor and position.status == 'ACTIVE':  # Sadece gerçek pozisyonları kapat
+            try:
+                logger.info(f"🔴 {position.symbol} Binance'de kapatılıyor... (Reason: {reason})")
+                
+                # Market emri ile pozisyonu kapat
+                close_side = 'SELL' if position.direction == 'LONG' else 'BUY'
+                close_order = executor.binance_client.futures_create_order(
+                    symbol=position.symbol.replace('/', ''),  # BTCUSDT formatına çevir
+                    side=close_side,
+                    type='MARKET',
+                    quantity=position.position_size_units,
+                    reduceOnly=True  # Sadece mevcut pozisyonu kapat
+                )
+                
+                # Gerçek kapanış fiyatını al
+                if 'avgPrice' in close_order and close_order['avgPrice']:
+                    exit_price = float(close_order['avgPrice'])
+                    logger.info(f"✅ {position.symbol} Binance'de kapatıldı! Gerçek fiyat: {exit_price}")
+                else:
+                    logger.warning(f"⚠️ Kapanış fiyatı alınamadı, tahmin edilen fiyat kullanılıyor: {exit_price}")
+                
+            except BinanceAPIException as api_e:
+                logger.error(f"❌ Binance API hatası ({position.symbol}): {api_e}", exc_info=True)
+                # Pozisyon zaten kapalı olabilir, devam et
+            except Exception as e:
+                logger.error(f"❌ {position.symbol} Binance kapatma hatası: {e}", exc_info=True)
+        elif position.status == 'SIMULATED':
+            logger.info(f"🎮 {position.symbol} simülasyon pozisyonu, Binance işlemi yok")
+        else:
+            logger.warning(f"⚠️ Executor yok, {position.symbol} sadece DB'den silinecek")
+        
+        # STEP 2: PnL hesaplama (orijinal mantık korunuyor)
         if position.direction == 'LONG':
             pnl_usd = (exit_price - position.entry_price) * position.position_size
         else:
@@ -928,7 +968,7 @@ def close_position(position_id: int, exit_price: float, reason: str):
         
         pnl_percent = (pnl_usd / (position.entry_price * position.position_size)) * 100
         
-        # Trade history'ye kaydet
+        # STEP 3: Trade history'ye kaydet
         trade_history = TradeHistory(
             symbol=position.symbol,
             direction=position.direction,
@@ -947,11 +987,11 @@ def close_position(position_id: int, exit_price: float, reason: str):
         )
         db.add(trade_history)
         
-        # Açık pozisyonu sil
+        # STEP 4: Açık pozisyonu DB'den sil
         db.delete(position)
         # commit otomatik (context manager)
     
-    # Telegram bildirimi
+    # STEP 5: Telegram bildirimi
     send_position_closed_alert(trade_history)
     
     logger.info(f"{'🟢' if pnl_usd > 0 else '🔴'} Pozisyon kapatıldı: {position.symbol} {reason} | PnL: ${pnl_usd:.2f} ({pnl_percent:.2f}%)")

@@ -438,11 +438,14 @@ def main_scan_cycle():
                     if coin_specific_strategy == 'PULLBACK':
                         technical_signal = strategies.find_pullback_signal(df_1d, df_4h, df_1h, config)
                     elif coin_specific_strategy == 'MEAN_REVERSION':
-                        technical_signal = strategies.find_mean_reversion_signal(df_4h, df_1h, config)
+                        # v9.0: 1D eklendi
+                        technical_signal = strategies.find_mean_reversion_signal(df_1d, df_4h, df_1h, config)
                     elif coin_specific_strategy == 'BREAKOUT':
-                        technical_signal = strategies.find_breakout_signal(df_1h, config)
+                        # v9.0: 1D ve 4H eklendi
+                        technical_signal = strategies.find_breakout_signal(df_1d, df_4h, df_1h, config)
                     elif coin_specific_strategy == 'ADVANCED_SCALP':
-                        technical_signal = strategies.find_advanced_scalp_signal(df_scalp, config)
+                        # v9.0: 1D, 4H, 1H eklendi
+                        technical_signal = strategies.find_advanced_scalp_signal(df_1d, df_4h, df_1h, df_scalp, config)
                 except Exception as e:
                     logger.error(f"{symbol} strateji hatası: {e}", exc_info=True)
 
