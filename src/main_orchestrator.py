@@ -67,7 +67,48 @@ executor = None
 capital_manager = None
 
 # v8.1: Rotating coin scan offset (tüm coinlerin taranması için)
-coin_scan_offset = 0
+# v9.1: DB'den yükle (restart'ta kaybolmasın)
+def get_coin_scan_offset():
+    """Rotating scan offset'ini DB'den yükle veya 0 döndür"""
+    try:
+        db = db_session()
+        try:
+            cache_record = db.query(AlphaCache).filter(AlphaCache.key == 'coin_scan_offset').first()
+            if cache_record and cache_record.value:
+                offset = int(cache_record.value)
+                logger.info(f"🔄 Coin scan offset DB'den yüklendi: {offset}")
+                return offset
+        except Exception as e:
+            logger.warning(f"Offset yüklenemedi: {e}")
+        finally:
+            db_session.remove()
+    except:
+        pass
+    return 0
+
+def save_coin_scan_offset(offset):
+    """Rotating scan offset'ini DB'ye kaydet"""
+    try:
+        db = db_session()
+        try:
+            cache_record = db.query(AlphaCache).filter(AlphaCache.key == 'coin_scan_offset').first()
+            if cache_record:
+                cache_record.value = offset
+                db.merge(cache_record)
+            else:
+                new_cache = AlphaCache(key='coin_scan_offset', value=offset)
+                db.add(new_cache)
+            db.commit()
+            logger.debug(f"🔄 Coin scan offset DB'ye kaydedildi: {offset}")
+        except Exception as e:
+            logger.error(f"Offset kaydedilemedi: {e}")
+            db.rollback()
+        finally:
+            db_session.remove()
+    except:
+        pass
+
+coin_scan_offset = get_coin_scan_offset()  # İlk yüklemede DB'den al
 
 # --- Rate Limit Ayarları ---
 def adjust_rate_limit(increase: bool = True):
@@ -233,11 +274,13 @@ def main_scan_cycle():
                     # Listenin sonuna gelince başa dön
                     initial_list = initial_list[start_idx:] + initial_list[:end_idx]
                 
-                logger.info(f"🔄 Rotating Scan: Coins [{start_idx}→{(start_idx + len(initial_list) - 1) % (coin_scan_offset + len(initial_list))}] / Total Pool")
+                logger.info(f"🔄 Rotating Scan: Coins [{start_idx}→{(start_idx + len(initial_list) - 1) % (coin_scan_offset + len(initial_list))}] / Total Pool (Total: {len(initial_list)} coins)")
                 logger.info(f"📊 Bu cycle'da {len(initial_list)} coin taranacak (offset: {coin_scan_offset})")
                 
-                # Sonraki cycle için offset'i artır
+                # Sonraki cycle için offset'i artır VE DB'ye kaydet
                 coin_scan_offset += max_coins
+                save_coin_scan_offset(coin_scan_offset)  # 🆕 v9.1: DB'ye kaydet
+                logger.info(f"🔄 Yeni offset: {coin_scan_offset} (DB'ye kaydedildi)")
             elif len(initial_list) > max_coins:
                 # Eski davranış (backward compatibility - ENABLE_ROTATING_SCAN=False)
                 logger.warning(f"⚠️ Liste çok uzun ({len(initial_list)}), ilk {max_coins} coin seçiliyor (Rotating KAPALI)")
