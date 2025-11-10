@@ -583,8 +583,12 @@ def auto_assign_correlation_group(symbol: str) -> str:
 
 print("Config: Tüm yapılandırma değişkenleri yüklendi.")
 
-# ⚠️ GERÇek TRADING AKTİFLEŞTİRME - SADECE TEST EDİLDİKTEN SONRA True YAP
-ENABLE_REAL_TRADING = os.getenv('ENABLE_REAL_TRADING', 'False').lower() == 'true'
+# ⚠️ GERÇEK TRADING AKTİFLEŞTİRME
+# İstek üzerine varsayılanı True yapıldı; yine de .env ile güvenli şekilde yönetebilirsiniz.
+ENABLE_REAL_TRADING = os.getenv('ENABLE_REAL_TRADING', 'True').lower() == 'true'
+
+# Executor başlatılamazsa simülasyona düşülsün mü? (Canlı ticarette önerilmez)
+ALLOW_SIMULATION_FALLBACK = os.getenv('ALLOW_SIMULATION_FALLBACK', 'False').lower() == 'true'
 
 # Gerçek trading için minimum test gereksinimleri
 # GÜNCELLENDİ (8 Kasım 2025): Print kullan (logger henüz import edilmedi)

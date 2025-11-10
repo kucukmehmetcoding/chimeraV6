@@ -1348,16 +1348,19 @@ if __name__ == "__main__":
         logger.info("✅ Executor başarıyla başlatıldı!")
     except Exception as e_exec:
         logger.critical(f"❌ Executor başlatılamadı! Hata: {e_exec}", exc_info=True)
-        # Yumuşak geri dönüş: Simülasyon moduna geç
-        try:
-            import time as _t
-            logger.warning("⚠️ Executor yok - Simülasyon moduna düşülüyor (ENABLE_REAL_TRADING=False)")
-            setattr(config, 'ENABLE_REAL_TRADING', False)
-            executor = None
-            # Küçük bekleme (log sırası için)
-            _t.sleep(0.2)
-        except Exception as _fallback_err:
-            logger.error(f"Simülasyon moduna geçiş başarısız: {_fallback_err}")
+        allow_fallback = getattr(config, 'ALLOW_SIMULATION_FALLBACK', False)
+        if allow_fallback:
+            try:
+                import time as _t
+                logger.warning("⚠️ Executor yok - Simülasyon moduna düşülüyor (ALLOW_SIMULATION_FALLBACK=True)")
+                setattr(config, 'ENABLE_REAL_TRADING', False)
+                executor = None
+                _t.sleep(0.2)
+            except Exception as _fallback_err:
+                logger.error(f"Simülasyon moduna geçiş başarısız: {_fallback_err}")
+                sys.exit(1)
+        else:
+            logger.critical("❌ Fallback devre dışı (ALLOW_SIMULATION_FALLBACK=False) - Bot durduruluyor.")
             sys.exit(1)
     
     # 🆕 STARTUP RECONCILIATION: DB ile Binance senkronizasyonu
