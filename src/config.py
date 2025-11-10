@@ -275,11 +275,60 @@ STALE_SENTIMENT_MINUTES = int(os.getenv("STALE_SENTIMENT_MINUTES", 180))  # 3 sa
 # Sadece A ve B grade sinyaller kabul edilir (C ve D reddedilir)
 # v9.0 UPDATED: Kaliteli sinyallere DAHA FAZLA risk (A grade için 1.3x bonus)
 QUALITY_MULTIPLIERS = {
-    'A': 1.3,   # v9.0: En yüksek kalite → Risk BONUS %130 (önceki: 1.0)
-    'B': 1.0,   # İyi kalite - risk çarpanı 1.0 (tam risk)
-    'C': 0.0,   # v9.0: C grade devre dışı (reddedilir)
-    'D': 0.0    # v9.0: D grade devre dışı (reddedilir)
+    'A': 1.25,  # Hafif ayarlandı: A grade çok agresif olmasın (1.25x)
+    'B': 1.0,   # B normal risk
+    'C': 0.6,   # Mikro risk → kabul edilebilir düşük kalite (penalize edilmiş)
+    'D': 0.1    # Çok düşük ama tamamen veto değil (isteğe bağlı kapatılabilir)
 }
+
+# --- Secondary R:R Tier (Daha fazla sinyal yakalamak için) ---
+# Birincil eşik yine MIN_RR_RATIO (dosyada daha üstte tanımlı)
+# İkincil eşik: Daha düşük fakat risk çarpanı düşürülmüş şekilde kabul edilir.
+MIN_RR_SECONDARY = float(os.getenv("MIN_RR_SECONDARY", 0.85))  # 0.85 - 0.99 arası kabul
+SECONDARY_RISK_MULTIPLIER = float(os.getenv("SECONDARY_RISK_MULTIPLIER", 0.55))  # Birincil riskin %55'i
+
+# C ve D grade için mikro risk kullanımını global aç/kapat
+ENABLE_MICRO_RISK_LOW_GRADES = bool(int(os.getenv("ENABLE_MICRO_RISK_LOW_GRADES", 1)))
+
+# --- NaN Toleransı ---
+# Belirli sayıda eksik indikatör varsa tamamen reddetme; ceza uygula
+NAN_TOLERANCE_ENABLED = bool(int(os.getenv("NAN_TOLERANCE_ENABLED", 1)))
+MAX_NAN_INDICATORS_ALLOWED = int(os.getenv("MAX_NAN_INDICATORS_ALLOWED", 2))  # Örn: 2 kolona kadar eksik tolerans
+NAN_PENALTY_PER_INDICATOR = float(os.getenv("NAN_PENALTY_PER_INDICATOR", 0.15))  # Kalite skorundan düşülecek
+
+# --- Rejim Adaptif Eşikler ---
+# Rejime göre efektif RR ve hacim eşiklerini ayarla (ör: BREAKOUT modunda hacim gereksinimi yüksek)
+ADAPTIVE_THRESHOLDS_ENABLED = bool(int(os.getenv("ADAPTIVE_THRESHOLDS_ENABLED", 1)))
+RR_THRESHOLDS_BY_REGIME = {
+    'PULLBACK': float(os.getenv("RR_THRESHOLD_PULLBACK", 1.0)),
+    'MEAN_REVERSION': float(os.getenv("RR_THRESHOLD_MEAN_REVERSION", 0.95)),
+    'BREAKOUT': float(os.getenv("RR_THRESHOLD_BREAKOUT", 1.05)),
+    'STOP': float(os.getenv("RR_THRESHOLD_STOP", 999))  # STOP modunda trade yok
+}
+VOLUME_RATIO_MIN_BY_REGIME = {
+    'PULLBACK': float(os.getenv("VOL_RATIO_MIN_PULLBACK", 1.0)),
+    'MEAN_REVERSION': float(os.getenv("VOL_RATIO_MIN_MEAN_REVERSION", 1.1)),
+    'BREAKOUT': float(os.getenv("VOL_RATIO_MIN_BREAKOUT", 1.3)),
+    'STOP': float(os.getenv("VOL_RATIO_MIN_STOP", 999))
+}
+
+# --- Two-Stage Pipeline ---
+ENABLE_TWO_STAGE_PIPELINE = bool(int(os.getenv("ENABLE_TWO_STAGE_PIPELINE", 1)))
+STAGE1_MIN_VOL_RATIO = float(os.getenv("STAGE1_MIN_VOL_RATIO", 1.05))  # Hafif daha düşük hacim eşiği
+STAGE1_MIN_MOMENTUM_SCORE = float(os.getenv("STAGE1_MIN_MOMENTUM_SCORE", 0.4))  # Momentum skorundan geçiş
+STAGE1_MAX_CANDIDATES = int(os.getenv("STAGE1_MAX_CANDIDATES", 25))  # Stage1 → Stage2 aktarım limiti
+
+# --- Probabilistic Position Sizing ---
+ENABLE_PROBABILISTIC_SIZING = bool(int(os.getenv("ENABLE_PROBABILISTIC_SIZING", 1)))
+PROB_SIZING_MIN = float(os.getenv("PROB_SIZING_MIN", 0.45))  # Min risk yüzdesi ölçeği
+PROB_SIZING_MAX = float(os.getenv("PROB_SIZING_MAX", 1.1))   # Max risk yüzdesi ölçeği (kalite + momentum yüksekse)
+
+# --- Frequency Throttle ---
+ENABLE_FREQUENCY_THROTTLE = bool(int(os.getenv("ENABLE_FREQUENCY_THROTTLE", 1)))
+THROTTLE_WINDOW_MINUTES = int(os.getenv("THROTTLE_WINDOW_MINUTES", 90))  # Son 90 dakikada...
+MAX_NEW_POSITIONS_PER_WINDOW = int(os.getenv("MAX_NEW_POSITIONS_PER_WINDOW", 4))  # ... en fazla 4 yeni pozisyon
+THROTTLE_GRADE_PRIORITY = ['A', 'B', 'C']  # D grade zaten düşük öncelik
+
 # D: Tamamen iptal (sadece çok kötü sinyaller)
 
 # --- v9.2 SMART SL/TP System Parameters ---

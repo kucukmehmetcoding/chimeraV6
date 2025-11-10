@@ -373,6 +373,41 @@ def main_scan_cycle():
             if not scan_list:
                 logger.warning("Pre-screening sonrası hiç coin kalmadı! Tarama yapılmayacak.")
                 return
+
+            # --- Two-Stage Pipeline: Stage-1 (hafif) aday kısıtlaması ---
+            if getattr(config, 'ENABLE_TWO_STAGE_PIPELINE', False) and all_tickers:
+                try:
+                    stage1_min_vol_ratio = getattr(config, 'STAGE1_MIN_VOL_RATIO', 1.05)
+                    stage1_min_momentum = getattr(config, 'STAGE1_MIN_MOMENTUM_SCORE', 0.4)
+                    stage1_max = getattr(config, 'STAGE1_MAX_CANDIDATES', 25)
+
+                    # Basit momentum skoru: normalize edilmiş fiyat değişimi + hacim oranı katkısı
+                    # Hacim oranı ~ (24h quoteVolume / min_volume)
+                    stage1_scores = []
+                    for sym in scan_list:
+                        t = ticker_dict.get(sym)
+                        if not t:
+                            continue
+                        try:
+                            price_change_pct = abs(float(t.get('priceChangePercent', 0.0)))
+                            volume_usd = float(t.get('quoteVolume', 0.0))
+                            vol_ratio = volume_usd / max(min_volume, 1.0)
+                            momentum_score = (price_change_pct / 10.0) * 0.6 + min(vol_ratio, 3.0) * 0.4
+                            if vol_ratio >= stage1_min_vol_ratio and momentum_score >= stage1_min_momentum:
+                                stage1_scores.append((sym, momentum_score, vol_ratio, price_change_pct))
+                        except Exception:
+                            continue
+
+                    # Skora göre sırala ve limitle
+                    stage1_scores.sort(key=lambda x: (-x[1], -x[3]))
+                    limited = stage1_scores[:stage1_max]
+                    new_scan_list = [s[0] for s in limited]
+
+                    logger.info(f"🪄 Stage-1 Pipeline: {len(scan_list)} → {len(new_scan_list)} adaya indirildi (max={stage1_max})")
+                    logger.debug(f"Stage-1 Top Adaylar: {limited[:5]}")
+                    scan_list = new_scan_list if new_scan_list else scan_list
+                except Exception as stage1_err:
+                    logger.warning(f"Stage-1 pipeline uygulanamadı: {stage1_err}")
                 
         except Exception as e:
             logger.error(f"Coin listesi/pre-screening hatası: {e}", exc_info=True)
@@ -475,9 +510,12 @@ def main_scan_cycle():
                     logger.error(f"{symbol} için rejim belirlenirken hata: {e}")
                     continue
 
-                # NaN Kontrolü
+                # NaN Kontrolü + Tolerans
                 data_valid = True
                 nan_reason = []
+                nan_penalty_count = 0
+                tol_enabled = getattr(config, 'NAN_TOLERANCE_ENABLED', False)
+                max_nan_allowed = getattr(config, 'MAX_NAN_INDICATORS_ALLOWED', 0)
                 required_cols = getattr(config, 'STRATEGY_REQUIRED_INDICATORS', {}).get(coin_specific_strategy, {})
                 dfs = {'1d': df_1d, '4h': df_4h, '1h': df_1h, scalp_tf: df_scalp}
                 
@@ -494,13 +532,23 @@ def main_scan_cycle():
                     missing = [c for c in cols_to_check if c not in df.columns]
                     nans = [c for c in cols_to_check if c in last_row and pd.isna(last_row[c])]
                     
-                    if missing:
-                        data_valid = False
-                        nan_reason.append(f"{tf_name} eksik: {','.join(missing)}")
-                    if nans:
-                        data_valid = False
-                        nan_reason.append(f"{tf_name} NaN: {','.join(nans)}")
+                    if missing or nans:
+                        issue_count = len(missing) + len(nans)
+                        if tol_enabled and issue_count > 0:
+                            nan_penalty_count += issue_count
+                            nan_reason.append(f"{tf_name} tolerans: eksik={len(missing)}, NaN={len(nans)}")
+                        else:
+                            data_valid = False
+                            if missing:
+                                nan_reason.append(f"{tf_name} eksik: {','.join(missing)}")
+                            if nans:
+                                nan_reason.append(f"{tf_name} NaN: {','.join(nans)}")
                 
+                if tol_enabled and data_valid:
+                    if nan_penalty_count > max_nan_allowed:
+                        data_valid = False
+                        nan_reason.append(f"Toplam eksik/NaN {nan_penalty_count} > izin verilen {max_nan_allowed}")
+
                 if not data_valid:
                     logger.warning(f"{symbol}: Veri kontrolü başarısız ({coin_specific_strategy}): {'; '.join(nan_reason)}")
                     continue
@@ -583,11 +631,21 @@ def main_scan_cycle():
                         tp_price = sl_tp['tp_price']
                         partial_tp_1_price = sl_tp.get('partial_tp_1_price')
                         
-                        min_rr = getattr(config, 'MIN_RR_RATIO', 2.0)
+                        min_rr_base = getattr(config, 'MIN_RR_RATIO', 2.0)
                         rr = risk_calculator.calculate_rr(current_price, sl_price, tp_price, signal_direction)
+
+                        # Rejim adaptif R:R eşiği
+                        effective_min_rr = min_rr_base
+                        try:
+                            if getattr(config, 'ADAPTIVE_THRESHOLDS_ENABLED', False):
+                                rr_by_regime = getattr(config, 'RR_THRESHOLDS_BY_REGIME', {})
+                                regime_rr = rr_by_regime.get(coin_specific_strategy, min_rr_base)
+                                effective_min_rr = max(min_rr_base, regime_rr)
+                        except Exception:
+                            effective_min_rr = min_rr_base
                         
-                        if rr is not None and rr >= min_rr:
-                            logger.info(f"   PASSED R:R Check! ({rr:.2f} >= {min_rr})")
+                        if rr is not None and rr >= effective_min_rr:
+                            logger.info(f"   PASSED R:R Check! ({rr:.2f} >= {effective_min_rr})")
                             
                             # Kalite notu hesaplama
                             quality_grade = 'C'
@@ -631,12 +689,53 @@ def main_scan_cycle():
                                 'fng_index_at_signal': fng_score if isinstance(fng_score, int) else None,
                                 'news_sentiment_at_signal': news_score_val,
                                 'reddit_sentiment_at_signal': sentiment_scores.get('reddit_sentiment') if sentiment_scores else None,
-                                'google_trends_score_at_signal': sentiment_scores.get('google_trends_score') if sentiment_scores else None
+                                'google_trends_score_at_signal': sentiment_scores.get('google_trends_score') if sentiment_scores else None,
+                                'rr_tier': 'PRIMARY',
+                                'nan_penalty_count': nan_penalty_count
                             })
                         elif rr is None:
                             logger.warning(f"   {symbol}: R:R hesaplanamadı (Dinamik SL/TP ile).")
                         else:
-                            logger.info(f"   REJECTED: R:R düşük ({rr:.2f} < {min_rr}).")
+                            # Secondary tier kontrolü
+                            min_rr_secondary = getattr(config, 'MIN_RR_SECONDARY', None)
+                            if min_rr_secondary is not None and rr >= float(min_rr_secondary):
+                                logger.info(f"   Secondary Tier: R:R {rr:.2f} ikincil eşik {min_rr_secondary} üzerinde")
+                                # Kalite ve sentiment yine hesaplanır
+                                quality_grade = 'C'
+                                fng_score = 'N/A'
+                                news_score = 'N/A'
+                                news_score_val = None
+                                sentiment_scores = None
+                                try:
+                                    quality_grade = alpha_analyzer.calculate_quality_grade(symbol, config, signal_direction)
+                                    sentiment_scores = sentiment_analyzer.get_sentiment_scores(symbol, config)
+                                    fng_score = sentiment_scores.get('fng_index', 'N/A')
+                                    news_score_val = sentiment_scores.get('news_sentiment')
+                                    news_score = f"{news_score_val:.3f}" if news_score_val is not None else 'N/A'
+                                except Exception:
+                                    pass
+
+                                candidate_signals.append({
+                                    'symbol': symbol,
+                                    'strategy': coin_specific_strategy,
+                                    'direction': signal_direction,
+                                    'entry_price': current_price,
+                                    'sl_price': sl_price,
+                                    'tp_price': tp_price,
+                                    'partial_tp_1_price': partial_tp_1_price,
+                                    'rr_ratio': rr,
+                                    'quality_grade': quality_grade,
+                                    'signal_strength': signal_strength,
+                                    'atr': atr_value,
+                                    'fng_index_at_signal': fng_score if isinstance(fng_score, int) else None,
+                                    'news_sentiment_at_signal': news_score_val,
+                                    'reddit_sentiment_at_signal': sentiment_scores.get('reddit_sentiment') if sentiment_scores else None,
+                                    'google_trends_score_at_signal': sentiment_scores.get('google_trends_score') if sentiment_scores else None,
+                                    'rr_tier': 'SECONDARY',
+                                    'nan_penalty_count': nan_penalty_count
+                                })
+                            else:
+                                logger.info(f"   REJECTED: R:R düşük ({rr:.2f} < {effective_min_rr}).")
                     else:
                         logger.warning(f"   {symbol}: Dinamik SL/TP hesaplanamadı.")
 
@@ -668,7 +767,9 @@ def main_scan_cycle():
             
             max_open = getattr(config, 'MAX_OPEN_POSITIONS', 10)
             base_risk = getattr(config, 'BASE_RISK_PERCENT', 1.0)
-            q_multipliers = getattr(config, 'QUALITY_MULTIPLIERS', {'A': 1.2, 'B': 1.0, 'C': 0.5, 'D': 0.0})
+            q_multipliers = getattr(config, 'QUALITY_MULTIPLIERS', {'A': 1.25, 'B': 1.0, 'C': 0.6, 'D': 0.1})
+            secondary_multiplier = getattr(config, 'SECONDARY_RISK_MULTIPLIER', 0.55)
+            enable_micro_low = getattr(config, 'ENABLE_MICRO_RISK_LOW_GRADES', True)
             
             # Gerçek bakiyeyi kullan
             use_real_balance = getattr(config, 'USE_REAL_BALANCE', True)
@@ -738,6 +839,7 @@ def main_scan_cycle():
                     for signal in candidate_signals:
                         symbol = signal['symbol']
                         quality_grade = signal['quality_grade']
+                        rr_tier = signal.get('rr_tier', 'PRIMARY')
                         
                         # Grup ataması
                         if symbol in corr_groups_map:
@@ -747,6 +849,12 @@ def main_scan_cycle():
                             logger.debug(f"   {symbol}: Otomatik grup atandı → {signal_group}")
                         
                         risk_multiplier = q_multipliers.get(quality_grade, 0.0)
+                        if rr_tier == 'SECONDARY':
+                            risk_multiplier *= secondary_multiplier
+                        # Mikro risk kapalıysa C ve D azalt
+                        if not enable_micro_low and quality_grade in ['C', 'D']:
+                            logger.debug(f"   SKIP {symbol}: Mikro risk kapalı ve kalite {quality_grade}")
+                            continue
                         
                         if risk_multiplier <= 0:
                             logger.debug(f"   SKIP {symbol}: Kalite yetersiz ({quality_grade}).")
@@ -759,6 +867,22 @@ def main_scan_cycle():
                             continue
                         
                         planned_risk_percent = base_risk * risk_multiplier
+
+                        # Probabilistic sizing (sinyal gücü + kalite etkisi)
+                        if getattr(config, 'ENABLE_PROBABILISTIC_SIZING', False):
+                            try:
+                                strength = signal.get('signal_strength', 50.0) / 100.0  # 0-1
+                                quality_factor = {'A': 1.0, 'B': 0.8, 'C': 0.55, 'D': 0.3}.get(quality_grade, 0.5)
+                                probability_score = min(1.0, max(0.0, (strength * 0.6 + quality_factor * 0.4)))
+                                prob_min = getattr(config, 'PROB_SIZING_MIN', 0.45)
+                                prob_max = getattr(config, 'PROB_SIZING_MAX', 1.1)
+                                prob_scale = prob_min + (prob_max - prob_min) * probability_score
+                                planned_risk_percent *= prob_scale
+                                signal['probability_score'] = probability_score
+                                signal['prob_scaled'] = prob_scale
+                                logger.debug(f"   ProbSizing {symbol}: score={probability_score:.2f} scale={prob_scale:.2f} risk%={planned_risk_percent:.2f}")
+                            except Exception as ps_err:
+                                logger.warning(f"   Prob sizing hata: {ps_err}")
                         
                         # 🆕 GRUP RİSK KONTROLÜ
                         max_group_risk = getattr(config, 'MAX_RISK_PER_GROUP', 5.0)
@@ -786,6 +910,22 @@ def main_scan_cycle():
                         
                         if is_highly_correlated:
                             continue
+
+                        # Frequency throttle (ikincil tier ve düşük kaliteyi sınırlama)
+                        if getattr(config, 'ENABLE_FREQUENCY_THROTTLE', False):
+                            try:
+                                window_minutes = getattr(config, 'THROTTLE_WINDOW_MINUTES', 90)
+                                max_new = getattr(config, 'MAX_NEW_POSITIONS_PER_WINDOW', 4)
+                                now_ts = int(time.time())
+                                window_start = now_ts - window_minutes * 60
+
+                                recent_positions = [p for p in current_open_positions_db if p.open_time and p.open_time >= window_start]
+                                recent_count = len(recent_positions)
+                                if recent_count >= max_new and rr_tier == 'SECONDARY':
+                                    logger.info(f"   THROTTLE SKIP {symbol}: İkincil tier ve pencere dolu ({recent_count}/{max_new})")
+                                    continue
+                            except Exception as throttle_err:
+                                logger.warning(f"   Throttle kontrol hatası: {throttle_err}")
                         
                         # Position Sizing
                         try:
