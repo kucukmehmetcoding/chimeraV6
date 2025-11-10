@@ -73,8 +73,10 @@ if LOG_LEVEL not in valid_log_levels:
 
 # --- Tarama Ayarları ---
 SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", 2))  # GÜNCELLENDİ: 5dk → 2dk (v4.0 Enhancement)
-MAX_COINS_TO_SCAN = int(os.getenv("MAX_COINS_TO_SCAN", 300))  # v4.0: 110 → 300 (Futures için)
-SCAN_DELAY_SECONDS = float(os.getenv("SCAN_DELAY_SECONDS", 0.5))
+# Near-full futures coverage: allow higher ceiling (Binance USDT perpetuals ~> 350-500 range over time)
+MAX_COINS_TO_SCAN = int(os.getenv("MAX_COINS_TO_SCAN", 600))  # 300 → 600 (daha geniş kapsam)
+# Hafif artan gecikme (rate limit güvenliği) fakat toplam kapsam daha büyük
+SCAN_DELAY_SECONDS = float(os.getenv("SCAN_DELAY_SECONDS", 0.7))  # 0.5 → 0.7
 
 # v8.1: Rotating Scan (tüm coinlerin döngüsel taranması)
 ENABLE_ROTATING_SCAN = os.getenv("ENABLE_ROTATING_SCAN", "True").lower() == "true"  # True: Rotating mode, False: İlk N coin
@@ -89,11 +91,11 @@ AUTO_FUTURES_UPDATE_HOURS = int(os.getenv("AUTO_FUTURES_UPDATE_HOURS", 24))  # L
 # --- YENİ EKLENDİ: Hızlı Ön Filtreleme Ayarları (v4.0 Enhancement) ---
 # v9.0 PRECISION MODE: Kaliteli sinyal için sıkı filtreler
 # Taramaya dahil etmek için minimum 24 saatlik USDT hacmi
-PRE_SCREEN_MIN_VOLUME_USD = float(os.getenv("PRE_SCREEN_MIN_VOLUME_USD", 3_000_000)) # 500K → 3M (6x daha sıkı)
-# Taramaya dahil etmek için minimum 24 saatlik mutlak fiyat değişimi yüzdesi
-PRE_SCREEN_MIN_PRICE_CHANGE_PERCENT = float(os.getenv("PRE_SCREEN_MIN_PRICE_CHANGE_PERCENT", 2.5)) # 1.0% → 2.5% (sadece yüksek momentum)
-# Filtreleme modu: 'AND' (hem hacim hem değişim) veya 'OR' (en az biri)
-PRE_SCREEN_FILTER_MODE = os.getenv("PRE_SCREEN_FILTER_MODE", "AND")  # v9.0: AND modu (ikisi de gerekli)
+PRE_SCREEN_MIN_VOLUME_USD = float(os.getenv("PRE_SCREEN_MIN_VOLUME_USD", 300_000)) # 3M → 300K (daha geniş kapsam)
+# Taramaya dahil etmek için minimum 24 saatlik mutlak fiyat değişimi yüzdesi (düşürüldü)
+PRE_SCREEN_MIN_PRICE_CHANGE_PERCENT = float(os.getenv("PRE_SCREEN_MIN_PRICE_CHANGE_PERCENT", 0.7)) # 2.5% → 0.7%
+# Filtreleme modu: geniş kapsam için OR (hacim ya da momentum yeterli ise dahil et)
+PRE_SCREEN_FILTER_MODE = os.getenv("PRE_SCREEN_FILTER_MODE", "OR")  # AND → OR
 
 # v9.0: Stablecoin ve düşük volatilite coinleri blacklist (taramadan çıkar)
 BLACKLISTED_SYMBOLS = {
@@ -314,9 +316,10 @@ VOLUME_RATIO_MIN_BY_REGIME = {
 
 # --- Two-Stage Pipeline ---
 ENABLE_TWO_STAGE_PIPELINE = bool(int(os.getenv("ENABLE_TWO_STAGE_PIPELINE", 1)))
-STAGE1_MIN_VOL_RATIO = float(os.getenv("STAGE1_MIN_VOL_RATIO", 1.05))  # Hafif daha düşük hacim eşiği
-STAGE1_MIN_MOMENTUM_SCORE = float(os.getenv("STAGE1_MIN_MOMENTUM_SCORE", 0.4))  # Momentum skorundan geçiş
-STAGE1_MAX_CANDIDATES = int(os.getenv("STAGE1_MAX_CANDIDATES", 25))  # Stage1 → Stage2 aktarım limiti
+# Near-full kapsam modunda Stage-1 filtreleri gevşetildi / neredeyse pasif hale getirildi
+STAGE1_MIN_VOL_RATIO = float(os.getenv("STAGE1_MIN_VOL_RATIO", 0.95))  # 1.05 → 0.95 (hafifçe altına izin)
+STAGE1_MIN_MOMENTUM_SCORE = float(os.getenv("STAGE1_MIN_MOMENTUM_SCORE", 0.0))  # 0.4 → 0.0 (momentum bariyeri kaldırıldı)
+STAGE1_MAX_CANDIDATES = int(os.getenv("STAGE1_MAX_CANDIDATES", 1000))  # 25 → 1000 (fiilen sınırsız ~ tüm futures)
 
 # --- Probabilistic Position Sizing ---
 ENABLE_PROBABILISTIC_SIZING = bool(int(os.getenv("ENABLE_PROBABILISTIC_SIZING", 1)))
