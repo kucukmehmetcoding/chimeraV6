@@ -136,6 +136,8 @@ BASE_RISK_PERCENT = 1.0  # Varsayılan %1 risk (dinamik sistem kapalıysa)
 MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", 7))  # 3 → 7 (günde 2-3 sinyal × 2-3 gün = 7 pozisyon)
 MAX_RISK_PER_GROUP = float(os.getenv("MAX_RISK_PER_GROUP", 30.0))  # 15.0 → 30.0 (kaliteli sinyallere daha fazla risk)
 USE_KELLY_ADJUSTMENT = os.getenv("USE_KELLY_ADJUSTMENT", "True").lower() == "true"  # Kelly Criterion aktif
+# 🆕 v9.3: Kelly maksimum fraksiyon limiti (ek güvenlik)
+KELLY_MAX_FRACTION = float(os.getenv("KELLY_MAX_FRACTION", 0.15))  # Kelly yüzdesi üst sınırı (örn. %15)
 # v9.0 PRECISION: MIN RR oranı 1.5'e sabitlendi (kaliteli işlemler)
 MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 1.5))  # Minimum R:R oranı (önceki: 1.8)
 MAX_POSITIONS_PER_SYMBOL = int(os.getenv("MAX_POSITIONS_PER_SYMBOL", 1))
@@ -145,6 +147,9 @@ MAX_DRAWDOWN_PERCENT = float(os.getenv("MAX_DRAWDOWN_PERCENT", -50.0))  # Devre 
 PROFIT_TARGET_PERCENT = float(os.getenv("PROFIT_TARGET_PERCENT", 40.0))  # Kâr realizasyonu hedefi (%)
 AUTO_CLOSE_ON_CIRCUIT_BREAKER = os.getenv("AUTO_CLOSE_ON_CIRCUIT_BREAKER", "False").lower() == "true"  # ⚠️ TEHLİKELİ!
 AUTO_TRANSFER_PROFIT = os.getenv("AUTO_TRANSFER_PROFIT", "False").lower() == "true"  # Otomatik kâr transferi
+# 🆕 v9.3 PORTFÖY GÜVENLİĞİ: Günlük risk bütçesi ve devre kesici
+MAX_DAILY_RISK_PERCENT = float(os.getenv("MAX_DAILY_RISK_PERCENT", 5.0))  # Günlük toplam yeni risk bütçesi (% portföy)
+MAX_DAILY_DRAWDOWN_PERCENT = float(os.getenv("MAX_DAILY_DRAWDOWN_PERCENT", 5.0))  # Günlük max DD (yeni pozisyonları durdur)
 # -----------------------------------------------------------
 
 # --- v8.0 DİNAMİK Kaldıraç Sistemi ---
@@ -254,6 +259,9 @@ BTC_CORRELATION_THRESHOLD = float(os.getenv("BTC_CORRELATION_THRESHOLD", 0.5))
 
 # Strateji Filtre Ayarları
 MAX_ATR_PERCENT = float(os.getenv("MAX_ATR_PERCENT", 5.0))
+# 🆕 v9.3: Rejim yumuşatma ve sentiment tazelik eşikleri
+REGIME_SMOOTHING_WINDOW = int(os.getenv("REGIME_SMOOTHING_WINDOW", 5))  # En son N rejimden çoğunluk oyu
+STALE_SENTIMENT_MINUTES = int(os.getenv("STALE_SENTIMENT_MINUTES", 180))  # 3 saatten eski sentiment verisi cezalandırılır
 # ... (dosyanın geri kalanı aynı) ...
 
 # --- v5.0 ULTRA-OPTIMIZED: Kalite Notu Risk Çarpanları ---

@@ -196,6 +196,36 @@ def main_scan_cycle():
                 try:
                     global_btc_regime = strategies.determine_regime(btc_1d_indicators, btc_4h_indicators)
                     logger.info(f"Global BTC Rejimi: '{global_btc_regime}' olarak belirlendi.")
+                    # --- Rejim Yumuşatma (Smoothing) ---
+                    try:
+                        smoothing_window = getattr(config, 'REGIME_SMOOTHING_WINDOW', 5)
+                        if smoothing_window > 1:
+                            from collections import Counter
+                            with get_db_session() as db_smooth:
+                                regime_record = db_smooth.query(AlphaCache).filter(AlphaCache.key == 'regime_history').first()
+                                history = []
+                                if regime_record and regime_record.value:
+                                    history = regime_record.value
+                                history.append(global_btc_regime)
+                                # Son N değeri tut
+                                history = history[-smoothing_window:]
+                                # Çoğunluk oyu
+                                counts = Counter(history)
+                                majority_regime, majority_count = counts.most_common(1)[0]
+                                smoothed_regime = majority_regime
+                                if smoothed_regime != global_btc_regime:
+                                    logger.info(f"🔁 Rejim Yumuşatma: {global_btc_regime} -> {smoothed_regime} (window={history})")
+                                global_btc_regime = smoothed_regime
+                                # Kaydet
+                                if regime_record:
+                                    regime_record.value = history
+                                    db_smooth.merge(regime_record)
+                                else:
+                                    from src.database.models import AlphaCache as AC
+                                    db_smooth.add(AC(key='regime_history', value=history))
+                            logger.debug(f"Rejim geçmişi güncellendi: {history}")
+                    except Exception as smooth_err:
+                        logger.warning(f"Rejim smoothing uygulanamadı: {smooth_err}")
                 except Exception as e:
                     logger.error(f"Rejim belirlenirken hata: {e}", exc_info=True)
             else:
@@ -373,7 +403,7 @@ def main_scan_cycle():
         except Exception as e:
             logger.error(f"Korelasyon matrisi yüklenemedi: {e}", exc_info=True)
         
-        # --- Adım 4: Coin Analizi ve Aday Sinyal Toplama ---
+    # --- Adım 4: Coin Analizi ve Aday Sinyal Toplama ---
         logger.info(f"--- Adım 4: {len(scan_list)} Coin Analiz Ediliyor (Dinamik Rejim) ---")
 
         # --- Adım 4: Coin Analizi ve Aday Sinyal Toplama ---
@@ -847,7 +877,9 @@ def main_scan_cycle():
                         
                         # 🆕 KELLY CRITERION KONTROLÜ
                         kelly_size = None
-                        kelly_fraction = None
+                        kelly_percent = None
+                        kelly_confidence = None
+                        kelly_reasoning = ''
                         
                         try:
                             from src.risk_manager.kelly_calculator import KellyPositionSizer
@@ -866,7 +898,9 @@ def main_scan_cycle():
                             
                             if kelly_result and kelly_result.get('recommended_size', 0) > 0:
                                 kelly_size = kelly_result['recommended_size']
-                                kelly_fraction = kelly_result.get('kelly_percent', 0.0)
+                                kelly_percent = kelly_result.get('kelly_percent', 0.0)
+                                kelly_confidence = kelly_result.get('confidence')
+                                kelly_reasoning = kelly_result.get('risk_reasoning', '')
                                 
                                 current_position_value = sizing_result['position_size_units'] * signal['entry_price']
                                 
@@ -906,6 +940,26 @@ def main_scan_cycle():
                         else:
                             logger.info(f"   ✅ Margin OK: ${required_margin:.2f} gereken, pozisyon açılabilir")
                         
+                        # Portföy guard: günlük risk/drawdown limitleri
+                        try:
+                            # Portföy bakiyesi al (mevcut akıştan)
+                            if executor:
+                                portfolio_usd = executor.get_futures_account_balance()
+                                if portfolio_usd <= 0:
+                                    portfolio_usd = getattr(config, 'VIRTUAL_PORTFOLIO_USD', 1000)
+                            else:
+                                portfolio_usd = getattr(config, 'VIRTUAL_PORTFOLIO_USD', 1000)
+
+                            from src.risk_manager.portfolio_guard import check_daily_limits
+                            allow_open, reason, guard_status = check_daily_limits(config, portfolio_usd)
+                            if not allow_open:
+                                logger.warning(f"   ⛔ Portföy Guard engelledi: {reason} | Status: {guard_status}")
+                                continue
+                            else:
+                                logger.info(f"   ✅ Portföy Guard OK: Risk%={guard_status.get('open_risk_today_pct',0):.2f}, DD%={guard_status.get('dd_today_pct',0):.2f}")
+                        except Exception as guard_err:
+                            logger.warning(f"   Portföy guard kontrolü başarısız: {guard_err}")
+
                         # Signal verilerini güncelle
                         signal.update({
                             'final_risk_usd': sizing_result['final_risk_usd'],
@@ -918,8 +972,10 @@ def main_scan_cycle():
                             'volatility_score': sizing_result.get('volatility_score', 0.5),
                             'leverage': sizing_result.get('leverage', config.FUTURES_LEVERAGE),
                             'position_size_usd': signal['entry_price'] * sizing_result['position_size_units'],
-                            'kelly_size': kelly_size,  # 🆕 KELLY EKLENDİ
-                            'kelly_fraction': kelly_fraction  # 🆕 KELLY FRACTION EKLENDİ
+                            'kelly_size': kelly_size,                # Kelly önerilen pozisyon değeri (USD)
+                            'kelly_percent': kelly_percent,          # Gerçek Kelly yüzdesi (cap sonrası)
+                            'kelly_confidence': kelly_confidence,
+                            'risk_reasoning': kelly_reasoning
                         })
                         
                         # DB'ye kaydet (PENDING durumunda)
@@ -950,7 +1006,9 @@ def main_scan_cycle():
                             partial_tp_1_taken=False,
                             remaining_position_size=signal['position_size_units'],
                             volatility_score=signal.get('volatility_score', 0.5),  # 🆕 EKLENDİ
-                            kelly_percent=kelly_fraction,  # 🆕 KELLY FRACTION
+                            kelly_percent=(signal.get('kelly_percent') or 0.0),
+                            kelly_confidence=signal.get('kelly_confidence'),
+                            risk_reasoning=signal.get('risk_reasoning', ''),
                             status='PENDING'
                         )
                         
@@ -1151,6 +1209,18 @@ if __name__ == "__main__":
     except Exception as e_exec:
         logger.critical(f"❌ Executor başlatılamadı! GERÇEK TİCARET YAPILAMAYACAK. Hata: {e_exec}", exc_info=True)
         sys.exit(1)
+    
+    # 🆕 STARTUP RECONCILIATION: DB ile Binance senkronizasyonu
+    logger.info("🔍 Startup Reconciliation: DB pozisyonları Binance ile karşılaştırılıyor...")
+    try:
+        from src.trade_manager.reconciliation import reconcile_positions_on_startup
+        recon_result = reconcile_positions_on_startup(config)
+        if recon_result['orphaned_count'] > 0:
+            logger.warning(f"⚠️ {recon_result['orphaned_count']} orphan pozisyon temizlendi: {recon_result['closed_symbols']}")
+        else:
+            logger.info(f"✅ Reconciliation OK: DB ({recon_result['db_count']}) ve Binance ({recon_result['binance_count']}) senkron")
+    except Exception as e_recon:
+        logger.error(f"❌ Reconciliation başarısız (devam edilecek): {e_recon}", exc_info=True)
     
     logger.info("🏦 Capital Manager başlatılıyor...")
     try:

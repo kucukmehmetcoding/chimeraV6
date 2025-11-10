@@ -4,6 +4,7 @@ import logging
 import sys  # Test kodu için gerekli
 import time # Test kodu için gerekli
 from typing import Dict, Optional
+from datetime import datetime, timezone
 
 # sentiment_analyzer importu
 try:
@@ -42,6 +43,43 @@ def calculate_quality_grade(symbol: str, config: object, direction: str) -> str:
     except Exception as e:
          logger.error(f"'{symbol}' için duygu/trend skorları alınırken hata: {e}", exc_info=True)
          return 'C' # Hata durumunda 'C' dön (D değil - daha toleranslı)
+
+    # --- 1b. Veri Tazelik Kontrolü (Stale Sentiment Penalty) ---
+    try:
+        stale_threshold_min = getattr(config, 'STALE_SENTIMENT_MINUTES', 180)
+        if stale_threshold_min > 0:
+            from src.database.models import get_db_session, AlphaCache
+            stale_components = []
+            with get_db_session() as db_age:
+                keys = ['fng_index', 'rss_headlines', 'reddit_posts', 'google_trends']
+                now_utc = datetime.now(timezone.utc)
+                for k in keys:
+                    rec = db_age.query(AlphaCache).filter(AlphaCache.key == k).first()
+                    if rec and rec.last_updated:
+                        lu = rec.last_updated
+                        if lu.tzinfo is None:
+                            lu = lu.replace(tzinfo=timezone.utc)
+                        age_min = (now_utc - lu).total_seconds() / 60.0
+                        if age_min > stale_threshold_min:
+                            stale_components.append((k, age_min))
+                    else:
+                        # Kayıt yoksa da stale say
+                        stale_components.append((k, None))
+            if stale_components:
+                # Her bayat bileşen için hafif ceza uygulayacağız; toplam ceza sınırlı
+                stale_penalty_per = 0.25
+                max_total_penalty = 0.75
+                total_penalty = min(len(stale_components) * stale_penalty_per, max_total_penalty)
+                logger.warning(f"📉 Bayat sentiment verisi: {stale_components} -> Toplam ceza: {total_penalty:.2f}")
+                # Ceza, grade_score üzerine eklenecek; henüz grade_score tanımlanmadı, geçici değişkende tut
+                stale_penalty_accumulator = -total_penalty
+            else:
+                stale_penalty_accumulator = 0.0
+        else:
+            stale_penalty_accumulator = 0.0
+    except Exception as age_err:
+        logger.warning(f"Sentiment tazelik kontrolü başarısız: {age_err}")
+        stale_penalty_accumulator = 0.0
 
     # --- 2. v5.0: VETO SİSTEMİ KALDIRILDI ---
     # Artık hiçbir sentiment değeri sinyali iptal etmez
@@ -128,6 +166,14 @@ def calculate_quality_grade(symbol: str, config: object, direction: str) -> str:
         grade_score += no_info_penalty * trends_weight * 0.5 # Yarım ceza
         logger.debug(f"Google Trends skoru yok, Ceza: {no_info_penalty * trends_weight * 0.5:.2f}")
 
+
+    # 3e. Stale Penalty uygula (varsa)
+    try:
+        if 'stale_penalty_accumulator' in locals() and stale_penalty_accumulator != 0:
+            grade_score += stale_penalty_accumulator
+            logger.info(f"Stale sentiment cezası uygulandı: {stale_penalty_accumulator:.2f} -> Yeni skor: {grade_score:.2f}")
+    except Exception:
+        pass
 
     # 4. Toplam Skora Göre Harf Notu Belirleme
     # v5.0 ULTRA-OPTIMIZED: Eşikler yeniden kalibre edildi

@@ -76,10 +76,20 @@ class KellyPositionSizer:
         if self.use_fractional_kelly:
             kelly_percent *= self.kelly_fraction
             logger.info(f"Fractional Kelly uygulandı: {self.kelly_fraction} -> {kelly_percent:.2%}")
-        
-        # %100'ü geçmesin
-        kelly_percent = min(kelly_percent, 1.0)
-        
+
+        # Kelly üst sınırını uygula (hem %100 hem config limit)
+        max_fraction = getattr(self.config, 'KELLY_MAX_FRACTION', 0.15)
+        kelly_percent = min(kelly_percent, max_fraction)
+
+        # Veri güvenilirliği düşükse (az trade) ekstra konservatif kırp
+        total_trades = historical_stats.get('total_trades', 0)
+        min_trades = getattr(self.config, 'KELLY_MIN_TRADES_REQUIRED', 30)
+        risk_reasoning = []
+        if total_trades < min_trades:
+            logger.info(f"Kelly: Yetersiz geçmiş ({total_trades} < {min_trades}), konservatif kırpma uygulanıyor.")
+            kelly_percent = min(kelly_percent, max_fraction * 0.5)
+            risk_reasoning.append(f"insufficient_history:{total_trades}/{min_trades}")
+
         # Güven seviyesi belirle
         if kelly_percent > 0.15:  # %15'ten fazla
             confidence = 'HIGH'
@@ -99,7 +109,8 @@ class KellyPositionSizer:
         return {
             'kelly_percent': kelly_percent,
             'recommended_size': recommended_size,
-            'confidence': confidence
+            'confidence': confidence,
+            'risk_reasoning': ';'.join(risk_reasoning) if 'risk_reasoning' in locals() else ''
         }
     
     def _get_historical_performance(self) -> Dict[str, float]:
