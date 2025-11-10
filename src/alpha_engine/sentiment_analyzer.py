@@ -1,3 +1,4 @@
+from __future__ import annotations
 # src/alpha_engine/sentiment_analyzer.py
 
 import logging
@@ -8,7 +9,7 @@ from bs4 import BeautifulSoup
 import praw
 import re
 import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 import math
 from datetime import datetime, timedelta, timezone 
 from difflib import SequenceMatcher
@@ -19,6 +20,10 @@ except ImportError:
     print("UYARI: 'pytrends' veya 'pandas' kütüphanesi bulunamadı...")
     TrendReq = None
     pd = None
+
+# TYPE_CHECKING blokları için DataFrame tipini sadece type-check anında kullan
+if TYPE_CHECKING:
+    from pandas import DataFrame
 
 # --- Loglama (En başta tanımla) ---
 logger = logging.getLogger(__name__)
@@ -53,33 +58,76 @@ except Exception as e:
 reddit_client: Optional[praw.Reddit] = None
 
 def initialize_reddit_client(config: object) -> bool:
-    # ... (Bu fonksiyonun içeriği aynı, değişiklik yok) ...
+    """
+    Reddit istemcisini başlat.
+    - Tüm kimlik bilgileri (client_id, client_secret, username, password, user_agent) varsa: tam yetkili Script modu.
+    - Sadece client_id, client_secret ve user_agent varsa: READ-ONLY modu (kullanıcı adı/şifre gerekmez).
+    - Temel kimlikler eksikse: devre dışı.
+    """
     global reddit_client
-    if reddit_client: return True
+    if reddit_client:
+        return True
+
     client_id = getattr(config, 'REDDIT_CLIENT_ID', None)
     client_secret = getattr(config, 'REDDIT_CLIENT_SECRET', None)
     username = getattr(config, 'REDDIT_USERNAME', None)
     password = getattr(config, 'REDDIT_PASSWORD', None)
     user_agent = getattr(config, 'REDDIT_USER_AGENT', None)
-    if not all([client_id, client_secret, username, password, user_agent]):
-        logger.warning("⚠️ Reddit API bilgileri eksik. Reddit entegrasyonu çalışmayacak.")
-        return False
-    try:
-        logger.info("⏳ Reddit API istemcisi (PRAW) başlatılıyor...")
-        reddit_client = praw.Reddit(
-            client_id=client_id, client_secret=client_secret,
-            username=username, password=password, user_agent=user_agent,
-            check_for_async=False
+
+    # Hangi değişkenlerin eksik olduğunu netçe logla
+    vars_map = {
+        'REDDIT_CLIENT_ID': client_id,
+        'REDDIT_CLIENT_SECRET': client_secret,
+        'REDDIT_USERNAME': username,
+        'REDDIT_PASSWORD': password,
+        'REDDIT_USER_AGENT': user_agent,
+    }
+    missing = [k for k, v in vars_map.items() if not v]
+
+    # Temel kimlik bilgileri olmadan (id/secret/user_agent) başlatılamaz
+    if not client_id or not client_secret or not user_agent:
+        logger.warning(
+            f"⚠️ Reddit API temel bilgileri eksik (eksik: {missing}). Reddit entegrasyonu devre dışı."
         )
-        user_info = reddit_client.user.me()
-        logger.info(f"✅ Reddit API istemcisi başarıyla başlatıldı ve '{user_info.name}' olarak bağlandı.")
-        return True
+        return False
+
+    # Kullanıcı adı/şifre eksikse READ-ONLY moduna geç
+    readonly_mode = not (username and password)
+    try:
+        if readonly_mode:
+            logger.info("⏳ Reddit API (READ-ONLY) başlatılıyor: username/password olmadan.")
+            reddit_client = praw.Reddit(
+                client_id=client_id,
+                client_secret=client_secret,
+                user_agent=user_agent,
+                check_for_async=False,
+            )
+            reddit_client.read_only = True
+            # Basit bir istekle doğrula (rate limit'e takılmadan)
+            _ = reddit_client.auth.scopes()  # read-only'de boş dönebilir, ama client çalışıyor olur
+            logger.info("✅ Reddit READ-ONLY istemcisi başarıyla başlatıldı.")
+            return True
+        else:
+            logger.info("⏳ Reddit API (SCRIPT AUTH) başlatılıyor...")
+            reddit_client = praw.Reddit(
+                client_id=client_id,
+                client_secret=client_secret,
+                username=username,
+                password=password,
+                user_agent=user_agent,
+                check_for_async=False,
+            )
+            user_info = reddit_client.user.me()
+            logger.info(f"✅ Reddit API istemcisi başarıyla başlatıldı ve '{user_info.name}' olarak bağlandı.")
+            return True
     except praw.exceptions.PrawcoreException as e:
-        logger.error(f"❌ Reddit API kimlik doğrulaması başarısız! Hata: {e}")
-        reddit_client = None; return False
+        logger.error(f"❌ Reddit API kimlik doğrulaması/başlatma hatası: {e}")
+        reddit_client = None
+        return False
     except Exception as e:
         logger.error(f"❌ Reddit API istemcisi başlatılırken beklenmedik hata: {e}", exc_info=True)
-        reddit_client = None; return False
+        reddit_client = None
+        return False
 
 # --- Cache Anahtarları (DB'deki 'key' sütunu için) ---
 FNG_INDEX_KEY = "fng_index"
@@ -203,7 +251,7 @@ def fetch_reddit_data(config: object) -> List[Dict[str, Any]]:
         return all_posts
     except Exception as e: logger.error(f"Reddit verisi çekilirken hata: {e}", exc_info=True); return []
 
-def fetch_google_trends(keywords: list, timeframe: str = 'now 7-d') -> Optional[pd.DataFrame]:
+def fetch_google_trends(keywords: list, timeframe: str = 'now 7-d') -> Optional[Any]:  # DataFrame veya None
     # ... (Kod aynı, değişiklik yok) ...
     if TrendReq is None or pd is None: logger.error("Google Trends için 'pytrends'/'pandas' eksik."); return None
     if not keywords: logger.warning("Google Trends için anahtar kelime yok."); return None
@@ -310,7 +358,7 @@ def calculate_reddit_sentiment_for_symbol(symbol: str, reddit_posts: list, confi
     logger.info(f"'{symbol}' için {len(relevant)} Reddit gönderisinin ağ.ort. duygu skoru: {avg_score:.3f}")
     return avg_score
 
-def calculate_trends_score(symbol: str, trends_data: Optional[pd.DataFrame], config: object) -> Optional[float]:
+def calculate_trends_score(symbol: str, trends_data: Optional[Any], config: object) -> Optional[float]:  # trends_data DataFrame veya None
     # ... (Kod aynı, değişiklik yok) ...
     if pd is None: return None
     if trends_data is None or trends_data.empty: return None

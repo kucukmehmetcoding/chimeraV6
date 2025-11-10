@@ -35,6 +35,7 @@ feedparser==6.0.11             # RSS feed parsing (CoinDesk, CoinTelegraph)
 beautifulsoup4==4.12.3         # HTML/XML parsing
 lxml==5.1.0                    # XML/HTML parser (bs4 dependency)
 praw==7.7.1                    # Reddit API wrapper
+vaderSentiment==3.3.2          # VADER sentiment (Reddit & news polarity)
 pytrends==4.9.2                # Google Trends data
 google-generativeai==0.3.2     # Google Gemini API for news sentiment
 
