@@ -50,7 +50,8 @@ def reconcile_positions_on_startup(config) -> Dict[str, int]:
         
         # 2. Binance'ten açık pozisyonları al
         try:
-            binance_positions = executor.binance_client.futures_position_information()
+            # executor.client kullanıyoruz (binance_client değil)
+            binance_positions = executor.client.futures_position_information()
             # Sadece gerçekten açık pozisyonları filtrele (positionAmt != 0)
             active_binance = {
                 p['symbol']: float(p['positionAmt'])

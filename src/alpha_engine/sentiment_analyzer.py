@@ -106,23 +106,54 @@ def fetch_fear_and_greed_index() -> Optional[int]:
     except Exception as e: logger.error(f"F&G Index çekme hatası: {e}", exc_info=True); return None
 
 def fetch_rss_feeds(rss_urls: list) -> List[Dict[str, Any]]:
-    # ... (Kod aynı, değişiklik yok) ...
-    if not rss_urls: logger.warning("Config'de RSS feed URL'si yok."); return []
+    """
+    RSS feed'lerden haber başlıklarını çeker (timeout korumalı).
+    Returns: List of dicts with {title, link, published_timestamp, source}
+    """
+    if not rss_urls: 
+        logger.warning("Config'de RSS feed URL'si yok.") 
+        return []
+    
     logger.info(f"{len(rss_urls)} RSS feed'den haberler çekiliyor...")
-    all_headlines = []; processed_links = set()
+    all_headlines = []
+    processed_links = set()
+    
     for url in rss_urls:
         try:
+            # Timeout ekleyelim (max 10 saniye per feed)
+            import socket
+            socket.setdefaulttimeout(10)
+            
             feed_data = feedparser.parse(url, agent='Mozilla/5.0')
-            if feed_data.bozo: logger.warning(f"RSS ({url}) parse sorunu: {getattr(feed_data, 'bozo_exception', 'Bilinmeyen')}")
+            
+            if feed_data.bozo: 
+                logger.warning(f"RSS ({url}) parse sorunu: {getattr(feed_data, 'bozo_exception', 'Bilinmeyen')}")
+            
             source_name = getattr(feed_data.feed, 'title', url)
+            
             for entry in feed_data.entries:
-                link = getattr(entry, 'link', None); title = getattr(entry, 'title', None)
-                if not link or link in processed_links or not title: continue
+                link = getattr(entry, 'link', None)
+                title = getattr(entry, 'title', None)
+                
+                if not link or link in processed_links or not title:
+                    continue
+                
                 processed_links.add(link)
                 published_time_struct = getattr(entry, 'published_parsed', None) or getattr(entry, 'updated_parsed', None)
                 published_timestamp = time.mktime(published_time_struct) if published_time_struct else None
-                all_headlines.append({'title': title, 'link': link, 'published_timestamp': published_timestamp, 'source': source_name})
-        except Exception as e: logger.error(f"RSS feed ({url}) işlenirken hata: {e}", exc_info=True)
+                
+                all_headlines.append({
+                    'title': title,
+                    'link': link,
+                    'published_timestamp': published_timestamp,
+                    'source': source_name
+                })
+        
+        except socket.timeout:
+            logger.error(f"⏱️ RSS feed timeout ({url}) - 10 saniye içinde cevap gelmedi, atlanıyor")
+        except Exception as e:
+            logger.error(f"RSS feed ({url}) işlenirken hata: {e}", exc_info=True)
+    
     all_headlines.sort(key=lambda x: x.get('published_timestamp') or float('-inf'), reverse=True)
     logger.info(f"✅ {len(all_headlines)} benzersiz haber başlığı çekildi.")
     return all_headlines
