@@ -66,77 +66,113 @@ def calculate_percentage_sl_tp(entry_price: float, direction: str, config: objec
     """
     Giriş fiyatına göre kaldıraçlı yüzde tabanlı SL/TP hesaplar.
     
+    v9.2 GÜNCELEME: Partial TP kapalıysa tek TP kullanır.
+    
     Sistem (v7.0 DÜZELTME - Kaldıraç dikkate alınıyor):
     - SL: Pozisyon değerinin %10 zararı = Spot fiyatın (10% / kaldıraç) mesafesi
+    
+    Partial TP AÇIK ise:
     - TP_1: Pozisyon değerinin %20 karı = Spot fiyatın (20% / kaldıraç) mesafesi
     - TP_2: Pozisyon değerinin %40 karı = Spot fiyatın (40% / kaldıraç) mesafesi
     
-    Örnek (8x kaldıraç):
-    - SL: %10 pozisyon zararı = %1.25 spot fiyat hareketi
-    - TP_1: %20 pozisyon karı = %2.5 spot fiyat hareketi
-    - TP_2: %40 pozisyon karı = %5.0 spot fiyat hareketi
+    Partial TP KAPALI ise (v9.2):
+    - TP: Pozisyon değerinin %30 karı = Spot fiyatın (30% / kaldıraç) mesafesi (3.0 R:R)
     
-    R:R_1 = 2.0, R:R_2 = 4.0 (değişmez)
+    Örnek (8x kaldıraç, Partial TP kapalı):
+    - SL: %10 pozisyon zararı = %1.25 spot fiyat hareketi
+    - TP: %30 pozisyon karı = %3.75 spot fiyat hareketi (R:R = 3.0)
     """
     try:
+        # Partial TP ayarlarını kontrol et
+        partial_tp_enabled = getattr(config, 'PARTIAL_TP_ENABLED', True)
+        
         # Pozisyon bazlı yüzde değerleri
         position_sl_percent = getattr(config, 'SL_PERCENT', 10.0)
-        position_tp1_percent = getattr(config, 'PARTIAL_TP_1_PROFIT_PERCENT', 20.0)
-        position_tp2_percent = getattr(config, 'PARTIAL_TP_2_PROFIT_PERCENT', 40.0)
+        
+        if partial_tp_enabled:
+            # ESKİ SİSTEM: Partial TP aktif
+            position_tp1_percent = getattr(config, 'PARTIAL_TP_1_PROFIT_PERCENT', 20.0)
+            position_tp2_percent = getattr(config, 'PARTIAL_TP_2_PROFIT_PERCENT', 40.0)
+        else:
+            # YENİ SİSTEM: Tek TP (v9.2)
+            position_tp_percent = getattr(config, 'TP_PROFIT_PERCENT', 30.0)
+            position_tp1_percent = None  # Kullanılmayacak
+            position_tp2_percent = position_tp_percent  # Ana TP
         
         # Kaldıraç değeri
         leverage = getattr(config, 'FUTURES_LEVERAGE', 8)
         
         # SPOT fiyat hareketi = Pozisyon hareketi / Kaldıraç
         spot_sl_percent = position_sl_percent / leverage
-        spot_tp1_percent = position_tp1_percent / leverage
-        spot_tp2_percent = position_tp2_percent / leverage
+        
+        if partial_tp_enabled:
+            spot_tp1_percent = position_tp1_percent / leverage
+            spot_tp2_percent = position_tp2_percent / leverage
+        else:
+            spot_tp_percent = position_tp2_percent / leverage  # Tek TP
         
         sl_price = 0.0
-        tp1_price = 0.0
+        tp1_price = None
         tp2_price = 0.0
 
         if direction.upper() == 'LONG':
             # LONG: SL aşağıda, TP yukarıda
             sl_price = entry_price * (1 - (spot_sl_percent / 100.0))
-            tp1_price = entry_price * (1 + (spot_tp1_percent / 100.0))
-            tp2_price = entry_price * (1 + (spot_tp2_percent / 100.0))
+            if partial_tp_enabled:
+                tp1_price = entry_price * (1 + (spot_tp1_percent / 100.0))
+                tp2_price = entry_price * (1 + (spot_tp2_percent / 100.0))
+            else:
+                tp2_price = entry_price * (1 + (spot_tp_percent / 100.0))
         elif direction.upper() == 'SHORT':
             # SHORT: SL yukarıda, TP aşağıda
             sl_price = entry_price * (1 + (spot_sl_percent / 100.0))
-            tp1_price = entry_price * (1 - (spot_tp1_percent / 100.0))
-            tp2_price = entry_price * (1 - (spot_tp2_percent / 100.0))
+            if partial_tp_enabled:
+                tp1_price = entry_price * (1 - (spot_tp1_percent / 100.0))
+                tp2_price = entry_price * (1 - (spot_tp2_percent / 100.0))
+            else:
+                tp2_price = entry_price * (1 - (spot_tp_percent / 100.0))
         else:
             logger.error(f"Geçersiz yön: {direction}")
             return None
 
-        if sl_price <= 0 or tp1_price <= 0 or tp2_price <= 0:
-            logger.warning(f"Hesaplanan SL/TP geçersiz (<= 0). SL: {sl_price}, TP1: {tp1_price}, TP2: {tp2_price}")
+        if sl_price <= 0 or tp2_price <= 0:
+            logger.warning(f"Hesaplanan SL/TP geçersiz (<= 0). SL: {sl_price}, TP: {tp2_price}")
             return None
 
         # R:R hesaplama
         if direction.upper() == 'LONG':
             risk_distance = entry_price - sl_price
-            reward1_distance = tp1_price - entry_price
-            reward2_distance = tp2_price - entry_price
+            reward_distance = tp2_price - entry_price
+            if partial_tp_enabled and tp1_price:
+                reward1_distance = tp1_price - entry_price
         else:
             risk_distance = sl_price - entry_price
-            reward1_distance = entry_price - tp1_price
-            reward2_distance = entry_price - tp2_price
+            reward_distance = entry_price - tp2_price
+            if partial_tp_enabled and tp1_price:
+                reward1_distance = entry_price - tp1_price
         
-        rr1 = reward1_distance / risk_distance if risk_distance > 0 else 0
-        rr2 = reward2_distance / risk_distance if risk_distance > 0 else 0
+        rr = reward_distance / risk_distance if risk_distance > 0 else 0
 
         logger.info(f"   Kaldıraçlı SL/TP ({direction}, {leverage}x): Giriş={entry_price:.4f}")
         logger.info(f"   SL={sl_price:.4f} (-{spot_sl_percent:.2f}% spot = -{position_sl_percent}% pozisyon)")
-        logger.info(f"   TP1={tp1_price:.4f} (+{spot_tp1_percent:.2f}% spot = +{position_tp1_percent}% pozisyon, R:R={rr1:.2f})")
-        logger.info(f"   TP2={tp2_price:.4f} (+{spot_tp2_percent:.2f}% spot = +{position_tp2_percent}% pozisyon, R:R={rr2:.2f})")
         
-        return {
+        if partial_tp_enabled and tp1_price:
+            rr1 = reward1_distance / risk_distance if risk_distance > 0 else 0
+            logger.info(f"   TP1={tp1_price:.4f} (+{spot_tp1_percent:.2f}% spot = +{position_tp1_percent}% pozisyon, R:R={rr1:.2f})")
+            logger.info(f"   TP2={tp2_price:.4f} (+{spot_tp2_percent:.2f}% spot = +{position_tp2_percent}% pozisyon, R:R={rr:.2f})")
+        else:
+            logger.info(f"   TP={tp2_price:.4f} (+{spot_tp_percent:.2f}% spot = +{position_tp2_percent}% pozisyon, R:R={rr:.2f}) 🎯")
+        
+        result = {
             'sl_price': sl_price, 
-            'tp_price': tp2_price,  # Ana TP (kalan %50 için)
-            'partial_tp_1_price': tp1_price  # İlk kısmi TP
+            'tp_price': tp2_price  # Ana TP
         }
+        
+        if partial_tp_enabled and tp1_price:
+            result['partial_tp_1_price'] = tp1_price  # İlk kısmi TP
+        
+        return result
+        
     except Exception as e:
         logger.error(f"Yüzde tabanlı SL/TP hesaplanırken hata: {e}", exc_info=True)
         return None
@@ -298,11 +334,15 @@ def calculate_position_size_with_volatility(
         
         if use_fixed_risk:
             # ═══════════════════════════════════════════════════════════
-            # YENİ: SABİT RİSK SİSTEMİ
+            # YENİ: SABİT RİSK SİSTEMİ (v9.2 MARGIN BAZLI)
             # ═══════════════════════════════════════════════════════════
             
             fixed_risk_usd = getattr(config, 'FIXED_RISK_USD', 5.0)
-            max_position_value = getattr(config, 'MAX_POSITION_VALUE_USD', 150.0)
+            
+            # v9.2: MARGIN limitleri (position value DEĞİL!)
+            min_margin_usd = getattr(config, 'MIN_MARGIN_USD', 150.0)
+            max_margin_usd = getattr(config, 'MAX_MARGIN_USD', 300.0)
+            
             min_safety_margin = getattr(config, 'MINIMUM_SAFETY_MARGIN', 0.08)
             
             # 1. SL mesafesi hesapla
@@ -313,24 +353,7 @@ def calculate_position_size_with_volatility(
             
             sl_distance_percent = sl_distance_usd / entry_price
             
-            # 2. Pozisyon boyutu = Risk / SL mesafesi
-            position_size_units = fixed_risk_usd / sl_distance_usd
-            
-            # 3. Pozisyon değeri hesapla
-            position_value_usd = position_size_units * entry_price
-            
-            # 4. Maksimum limit kontrolü
-            if position_value_usd > max_position_value:
-                logger.debug(f"   ⚠️ Pozisyon değeri limit aşımı: ${position_value_usd:.2f} > ${max_position_value:.2f}")
-                position_size_units = max_position_value / entry_price
-                position_value_usd = max_position_value
-                # Risk yeniden hesapla
-                actual_risk = position_size_units * sl_distance_usd
-                logger.debug(f"   📉 Pozisyon limiti nedeniyle risk azaldı: ${fixed_risk_usd:.2f} → ${actual_risk:.2f}")
-            else:
-                actual_risk = fixed_risk_usd
-            
-            # 5. Kaldıraç belirleme (Sabit veya Dinamik)
+            # 2. Kaldıraç belirleme (Sabit veya Dinamik)
             dynamic_leverage_enabled = getattr(config, 'DYNAMIC_LEVERAGE_ENABLED', False)
             
             if dynamic_leverage_enabled:
@@ -355,25 +378,58 @@ def calculate_position_size_with_volatility(
                 leverage = getattr(config, 'FUTURES_LEVERAGE', 5)
                 logger.debug(f"   🔧 Sabit kaldıraç: {leverage}x")
             
-            # 6. Güvenlik marjı kontrolü (DEVRE DIŞI - Sabit kaldıraç kullanılıyor)
-            # Bilgilendirme amaçlı hesaplama
+            # 3. Pozisyon boyutu = Risk / SL mesafesi
+            position_size_units = fixed_risk_usd / sl_distance_usd
+            position_value_usd = position_size_units * entry_price
+            initial_margin_usd = position_value_usd / leverage
+            
+            # 🆕 v9.2 FIX: MARGIN BAZLI KONTROL (position value DEĞİL!)
+            # Kullanıcı: "Günde 1-2 pozisyon, kullanılan margin çok düşük (5 USD)"
+            # Çözüm: Minimum margin = 150 USD
+            
+            if initial_margin_usd < min_margin_usd:
+                logger.info(f"   � Kullanılan margin minimum altında: ${initial_margin_usd:.2f} < ${min_margin_usd:.2f}")
+                logger.info(f"   🔧 Margin minimum değere ayarlanıyor: ${min_margin_usd:.2f}")
+                
+                # Margin'den position value hesapla
+                position_value_usd = min_margin_usd * leverage
+                position_size_units = position_value_usd / entry_price
+                
+                # Risk yeniden hesapla (daha yüksek olacak)
+                actual_risk = position_size_units * sl_distance_usd
+                actual_margin_usd = min_margin_usd
+                
+                logger.info(f"   💰 Pozisyon değeri: ${position_value_usd:.2f} ({leverage}x kaldıraç)")
+                logger.info(f"   ⚠️ Risk artışı: ${fixed_risk_usd:.2f} → ${actual_risk:.2f}")
+            
+            # Maksimum margin kontrolü
+            elif initial_margin_usd > max_margin_usd:
+                logger.debug(f"   ⚠️ Margin limit aşımı: ${initial_margin_usd:.2f} > ${max_margin_usd:.2f}")
+                
+                position_value_usd = max_margin_usd * leverage
+                position_size_units = position_value_usd / entry_price
+                actual_risk = position_size_units * sl_distance_usd
+                actual_margin_usd = max_margin_usd
+                
+                logger.debug(f"   � Margin limiti nedeniyle risk azaldı: ${fixed_risk_usd:.2f} → ${actual_risk:.2f}")
+            else:
+                actual_risk = fixed_risk_usd
+                actual_margin_usd = initial_margin_usd
+            
+            # 4. Güvenlik marjı kontrolü (bilgilendirme amaçlı)
             liquidation_distance = 1.0 / leverage
             safety_margin = liquidation_distance - sl_distance_percent
             
-            # UYARI: Güvenlik kontrolü kapatıldı - kaldıraç sabit kullanılıyor
             logger.debug(f"   ℹ️  Güvenlik Marjı: {safety_margin:.2%} (Tasfiye: {liquidation_distance:.2%}, SL: {sl_distance_percent:.2%})")
             if safety_margin < 0:
                 logger.warning(f"   ⚠️ TEHLİKE! SL tasfiyeden SONRA ({abs(safety_margin):.2%}). Kaldıraç: {leverage}x")
             
-            # 7. Margin hesaplama
-            actual_margin_usd = position_value_usd / leverage
-            
-            # 8. Volatilite skoru (bilgi amaçlı)
+            # 5. Volatilite skoru (bilgi amaçlı)
             volatility_score = calculate_volatility_score(atr, entry_price) if atr else 0.5
             
             logger.info(f"   💰 Pozisyon Boyutu: {position_size_units:.4f} units (Değer: ${position_value_usd:.2f})")
-            logger.info(f"   🎯 Sabit Risk: ${actual_risk:.2f}, SL Mesafe: {sl_distance_percent:.2%}")
-            logger.info(f"   🔧 Kaldıraç: {leverage}x, Margin: ${actual_margin_usd:.2f}")
+            logger.info(f"   🎯 Risk: ${actual_risk:.2f}, SL Mesafe: {sl_distance_percent:.2%}")
+            logger.info(f"   🔧 Kaldıraç: {leverage}x, Kullanılan Margin: ${actual_margin_usd:.2f} 💵")
             logger.info(f"   ✅ Güvenlik Marjı: {safety_margin:.2%} (Tasfiye: {liquidation_distance:.2%}, SL: {sl_distance_percent:.2%})")
             
             return {

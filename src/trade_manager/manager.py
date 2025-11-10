@@ -100,6 +100,68 @@ def _update_trailing_stop(pos: OpenPosition, current_price: float) -> Tuple[Opti
         return None, None
 
 
+# --- YENİ: Ghost Position için gerçek kapanış fiyatını bul ---
+def _get_real_close_price_from_binance(symbol: str, open_time_ms: int, entry_price: float) -> Optional[float]:
+    """
+    Binance trades history'den pozisyonun gerçek kapanış fiyatını bul.
+    
+    Args:
+        symbol: Coin sembolü (örn: XVGUSDT)
+        open_time_ms: Pozisyon açılış zamanı (timestamp ms)
+        entry_price: Pozisyon giriş fiyatı (fallback için)
+    
+    Returns:
+        float: Gerçek kapanış fiyatı veya None
+    """
+    try:
+        executor = get_executor()
+        if not executor or not executor.binance_client:
+            logger.warning(f"⚠️ {symbol} için Binance client bulunamadı, trades history çekilemiyor")
+            return None
+        
+        # Son 50 trade'i çek (pozisyon kapanış trade'i burada olmalı)
+        trades = executor.binance_client.futures_account_trades(symbol=symbol, limit=50)
+        
+        if not trades:
+            logger.warning(f"⚠️ {symbol} için trades history boş")
+            return None
+        
+        # Pozisyonun açılış zamanından sonra gerçekleşen kapanış trade'lerini bul
+        # realizedPnl != 0 olan trade'ler pozisyon kapatan trade'lerdir
+        closing_trades = []
+        for trade in trades:
+            trade_time = int(trade['time'])
+            realized_pnl = float(trade.get('realizedPnl', 0))
+            
+            # Pozisyon açıldıktan sonra ve PnL realize eden trade'ler
+            if trade_time > open_time_ms and realized_pnl != 0:
+                closing_trades.append({
+                    'time': trade_time,
+                    'price': float(trade['price']),
+                    'qty': float(trade['qty']),
+                    'pnl': realized_pnl
+                })
+        
+        if not closing_trades:
+            logger.warning(f"⚠️ {symbol} için kapanış trade'i bulunamadı (açılış: {datetime.fromtimestamp(open_time_ms/1000)})")
+            return None
+        
+        # En son kapanış trade'inin fiyatını kullan
+        closing_trades.sort(key=lambda x: x['time'])
+        last_close = closing_trades[-1]
+        close_price = last_close['price']
+        
+        logger.info(f"✅ {symbol} gerçek kapanış fiyatı bulundu: ${close_price:.6f} (PnL: ${last_close['pnl']:.2f})")
+        return close_price
+        
+    except BinanceAPIException as e:
+        logger.error(f"❌ {symbol} trades history çekilirken Binance API hatası: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"❌ {symbol} gerçek kapanış fiyatı bulunurken hata: {e}", exc_info=True)
+        return None
+
+
 # --- v5.0 AUTO-PILOT: Binance Senkronizasyonu ---
 def sync_positions_with_binance(open_positions_lock: Lock) -> int:
     """
@@ -664,11 +726,33 @@ def continuously_check_positions(
                                 except Exception as close_ex:
                                     logger.error(f"❌ {pos_in_db.symbol} kapatma hatası: {close_ex}", exc_info=True)
                             elif close_reason == 'BINANCE_CLOSED':
-                                # Pozisyon zaten Binance'de kapanmış, sadece DB'yi temizle
-                                logger.info(f"👻 {pos_in_db.symbol} Binance'de zaten kapanmış, DB'den temizleniyor...")
-                                # Son bilinen fiyatı kullan (close_price None ise)
-                                if close_price is None:
-                                    close_price = pos_in_db.entry_price  # Fallback
+                                # Pozisyon zaten Binance'de kapanmış, gerçek kapanış fiyatını bul
+                                logger.info(f"👻 {pos_in_db.symbol} Binance'de zaten kapanmış, gerçek kapanış fiyatı aranıyor...")
+                                
+                                # 1. Önce Binance trades history'den gerçek kapanış fiyatını çek
+                                real_close_price = _get_real_close_price_from_binance(
+                                    symbol=pos_in_db.symbol,
+                                    open_time_ms=pos_in_db.open_time * 1000,  # Unix timestamp → ms
+                                    entry_price=pos_in_db.entry_price
+                                )
+                                
+                                if real_close_price:
+                                    close_price = real_close_price
+                                    logger.info(f"✅ {pos_in_db.symbol} gerçek kapanış fiyatı bulundu: ${close_price:.6f}")
+                                else:
+                                    # 2. Trades history'de bulunamazsa, güncel fiyatı kullan
+                                    logger.warning(f"⚠️ {pos_in_db.symbol} trades history'de bulunamadı, güncel fiyat kullanılıyor")
+                                    from src.data_fetcher.realtime_manager import RealTimeDataManager
+                                    realtime_mgr = RealTimeDataManager()
+                                    current_price = realtime_mgr.get_price(pos_in_db.symbol)
+                                    
+                                    if current_price:
+                                        close_price = current_price
+                                        logger.info(f"📊 {pos_in_db.symbol} güncel fiyat: ${close_price:.6f}")
+                                    else:
+                                        # 3. Son çare: entry price (en kötü senaryo)
+                                        logger.error(f"❌ {pos_in_db.symbol} için güncel fiyat da alınamadı! Entry price kullanılıyor (fallback)")
+                                        close_price = pos_in_db.entry_price
                             else:
                                 logger.warning(f"⚠️ Executor yok, {pos_in_db.symbol} sadece DB'den silinecek")
                             
@@ -767,6 +851,14 @@ def continuously_check_positions(
                                 pos_in_db.partial_tp_1_taken = True
                                 pos_in_db.position_size_units = remaining_size
                                 pos_in_db.remaining_position_size = remaining_size
+                                # 🔥 FIX: Risk miktarını da güncelle (TP1 sonrası %50 kaldı ise risk yarıya iner)
+                                remaining_percent = 100.0 - pos_in_db.partial_tp_1_percent
+                                pos_in_db.final_risk_usd = pos_in_db.final_risk_usd * (remaining_percent / 100.0)
+                                
+                                # 🔥 FIX: SL'yi Break-Even'a çek (risk-free trade)
+                                logger.info(f"   📌 SL güncelleniyor: {pos_in_db.sl_price:.6f} → {pos_in_db.entry_price:.6f} (Break-Even)")
+                                pos_in_db.sl_price = pos_in_db.entry_price
+                                
                                 db.merge(pos_in_db)
                                 
                                 # Bildirim için kaydet

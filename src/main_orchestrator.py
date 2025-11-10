@@ -519,14 +519,33 @@ def main_scan_cycle():
 
                     signal_direction = technical_signal['direction']
                     
-                    # SL/TP hesaplama
-                    use_percentage = getattr(config, 'USE_PERCENTAGE_SL_TP', True)
+                    # v9.2 SMART SL/TP hesaplama
+                    sl_tp_method = getattr(config, 'SL_TP_METHOD', 'SMART')
                     partial_tp_1_price = None
                     
-                    if use_percentage:
+                    if sl_tp_method == 'SMART':
+                        # YENİ: Hibrit sistem (ATR + Fibonacci + Swing Levels)
+                        from src.risk_manager.smart_sl_tp import calculate_smart_sl_tp
+                        sl_tp = calculate_smart_sl_tp(current_price, signal_direction, df_levels, config, current_atr)
+                        
+                        # Fallback: SMART başarısız olursa ATR kullan
+                        if sl_tp is None:
+                            logger.warning(f"   {symbol}: SMART sistem başarısız, ATR'ye düşülüyor")
+                            sl_tp = risk_calculator.calculate_dynamic_sl_tp(current_price, current_atr, signal_direction, config, strategy=coin_specific_strategy)
+                    
+                    elif sl_tp_method == 'PERCENTAGE':
+                        # Yüzde bazlı (mevcut sistem)
                         sl_tp = risk_calculator.calculate_percentage_sl_tp(current_price, signal_direction, config)
-                    else:
+                    
+                    elif sl_tp_method == 'ATR':
+                        # ATR bazlı (volatilite uyumlu)
                         sl_tp = risk_calculator.calculate_dynamic_sl_tp(current_price, current_atr, signal_direction, config, strategy=coin_specific_strategy)
+                    
+                    else:
+                        # Varsayılan: SMART
+                        logger.warning(f"   Bilinmeyen SL_TP_METHOD: {sl_tp_method}, SMART kullanılıyor")
+                        from src.risk_manager.smart_sl_tp import calculate_smart_sl_tp
+                        sl_tp = calculate_smart_sl_tp(current_price, signal_direction, df_levels, config, current_atr)
                     
                     if sl_tp:
                         sl_price = sl_tp['sl_price']

@@ -118,7 +118,17 @@ USE_REAL_BALANCE = os.getenv("USE_REAL_BALANCE", "True").lower() == "true"  # Ge
 # Filtreleme: %90'ı filtrelenecek → Geriye kalan %10 sinyaller ALTIN değerinde
 # Strateji: 1-2 sinyal/gün ama her biri $30-50 risk (normal: $15)
 FIXED_RISK_USD = float(os.getenv('FIXED_RISK_USD', '30.0'))  # $15 → $30 (2x artış - kaliteli sinyaller)
-MAX_POSITION_VALUE_USD = float(os.getenv('MAX_POSITION_VALUE_USD', '300.0'))  # $150 → $300 (2x artış)
+
+# 🆕 v9.2 CRITICAL FIX: Minimum MARGIN (kullanılan sermaye)
+# Kullanıcı talebi: "Günde 1-2 pozisyon, kullanılan margin çok düşük (5 USD)"
+# ÖNEMLİ: Bu değer MARGIN (teminat), position value DEĞİL!
+# Örnek: 150 USD margin × 8x kaldıraç = 1200 USD position value
+MIN_MARGIN_USD = float(os.getenv('MIN_MARGIN_USD', '150.0'))  # Minimum kullanılan margin
+MAX_MARGIN_USD = float(os.getenv('MAX_MARGIN_USD', '300.0'))  # Maksimum kullanılan margin
+
+# Eski değerler (yedek - artık kullanılmıyor)
+MIN_POSITION_VALUE_USD = MIN_MARGIN_USD * 8  # Geriye dönük uyumluluk için
+MAX_POSITION_VALUE_USD = MAX_MARGIN_USD * 8  # Geriye dönük uyumluluk için
 
 BASE_RISK_PERCENT = 1.0  # Varsayılan %1 risk (dinamik sistem kapalıysa)
 
@@ -188,31 +198,52 @@ VOLATILITY_HIGH_MULTIPLIER = 0.7  # Yüksek volatilitede pozisyon boyutunu %30 a
 # ---------------------------------------------------------
 
 # --- v6.0 SIMPLIFIED: Yüzde Tabanlı SL/TP Sistemi (7 Kasım 2025) ---
-# Kaldıraçlı yüzde bazlı SL/TP sistemi
-USE_PERCENTAGE_SL_TP = True  # Yüzde tabanlı sistem kullan (ATR yerine)
+# v9.2 UPDATED: 3 SL/TP Sistemi seçeneği
+
+# SL/TP Hesaplama Yöntemi Seçimi:
+# 'PERCENTAGE': Sabit yüzde bazlı (basit, hızlı, tutarlı)
+# 'ATR': Volatilite bazlı (adaptif, her coin için farklı)
+# 'SMART': Hibrit (ATR + Fibonacci + Swing Levels) - EN İYİ! 🎯
+SL_TP_METHOD = os.getenv("SL_TP_METHOD", "SMART")  # PERCENTAGE, ATR, veya SMART
+
+# Geriye dönük uyumluluk için (eski kod hala USE_PERCENTAGE_SL_TP kullanıyor)
+USE_PERCENTAGE_SL_TP = (SL_TP_METHOD == "PERCENTAGE")
 
 # 🔧 HİBRİT SİSTEM İÇİN OPTİMİZE
-# Stop Loss: Pozisyon değerinin %10 zararında = $50 × 10% = $5 zarar
-# Hedef: $50 pozisyon, $5 maksimum kayıp
+# Stop Loss: Pozisyon değerinin %10 zararında
 SL_PERCENT = float(os.getenv("SL_PERCENT", 10.0))  # %10 zarar (pozisyon değeri bazında)
 
-# Take Profit: Kademeli sistem
-PARTIAL_TP_ENABLED = True  # Kısmi kar alma mekanizmasını aktifleştir
-PARTIAL_TP_1_PERCENT = 50.0  # İlk kısmi TP'de pozisyonun %50'si kapatılır
-PARTIAL_TP_1_PROFIT_PERCENT = 20.0  # İlk TP: Pozisyon değerinin %20 karı (2.0 R:R)
-PARTIAL_TP_2_PROFIT_PERCENT = 40.0  # İkinci TP: Pozisyon değerinin %40 karı (4.0 R:R)
+# 🆕 v9.2 PLAN A: Partial TP Kapalı - Tek TP Sistemi
+# Neden? Küçük pozisyonlarda 3 işlem komisyonu çok fazla!
+# Önceki: Açılış + TP1 + TP2/SL = 3 işlem (komisyon: $0.036)
+# Yeni: Açılış + TP/SL = 2 işlem (komisyon: $0.024) → %33 tasarruf!
 
-# Hesaplama Örneği (Dinamik Kaldıraç - HİBRİT SİSTEM):
-# Pozisyon Değeri: $50 (sabit limit)
-# SL: -$5 (pozisyon değerinin %10'u) = Her pozisyonda maks kayıp
-# TP_1: +$10 (pozisyon değerinin %20'si) → %50 pozisyon kapat → R:R = 2.0
-# TP_2: +$20 (pozisyon değerinin %40'ı) → Kalan %50 kapat → R:R = 4.0
+PARTIAL_TP_ENABLED = False  # ❌ KAPALI - Tek TP kullanılacak
+TP_PROFIT_PERCENT = 30.0  # Tek TP: Pozisyon değerinin %30 karı (3.0 R:R)
+
+# Eski partial TP ayarları (yedek - kullanılmıyor)
+PARTIAL_TP_1_PERCENT = 50.0  # (Devre dışı)
+PARTIAL_TP_1_PROFIT_PERCENT = 20.0  # (Devre dışı)
+PARTIAL_TP_2_PROFIT_PERCENT = 40.0  # (Devre dışı)
+
+# Hesaplama Örneği (v9.2 TEK TP SİSTEMİ):
+# Min Margin: $150 (MIN_MARGIN_USD)
+# Kaldıraç: 8x → Pozisyon Değeri: $1200
+# SL: -$120 (pozisyon değerinin %10'u) = Maksimum kayıp
+# TP: +$360 (pozisyon değerinin %30'u) = R:R = 3.0
 # 
-# HİBRİT SİSTEM ÖZELLİKLERİ:
-# • Pozisyon Değeri: $50 sabit (MAX_POSITION_VALUE_USD limiti)
-# • Risk: Hedef $5, dar SL'de otomatik azalır
-# • Kaldıraç: SL mesafesine göre dinamik (3x-10x)
-# • Max 3 pozisyon = $150 toplam pozisyon değeri, $15 maksimum risk
+# Komisyon Karşılaştırması ($1200 pozisyon):
+# • Partial TP Açık: 3 işlem × 0.04% = $1.44 komisyon
+# • Partial TP Kapalı: 2 işlem × 0.04% = $0.96 komisyon
+# • Tasarruf: $0.48/trade (%33 azalma)
+# 
+# v9.2 SİSTEM ÖZELLİKLERİ:
+# • Min Margin: $150 (önceki: $5)
+# • Pozisyon Değeri: $1200 (8x kaldıraç)
+# • SL: -$120 (10% zarar)
+# • TP: +$360 (30% kâr, 3.0 R:R)
+# • Komisyon: %33 daha düşük
+# • Basit, güvenilir, test edilmiş
 # ---------------------------------------------------------
 
 # --- v7.0: Korelasyon Bazlı Rejim Seçimi ---
@@ -243,11 +274,14 @@ QUALITY_MULTIPLIERS = {
 }
 # D: Tamamen iptal (sadece çok kötü sinyaller)
 
-# --- GÜNCELLENDİ: Dinamik SL/TP Ayarları (Aşama 3) ---
-# ESKİ SİSTEM: ATR tabanlı (USE_PERCENTAGE_SL_TP=False ise kullanılır)
-SL_ATR_MULTIPLIER = float(os.getenv("SL_ATR_MULTIPLIER", 2.0))
-TP_ATR_MULTIPLIER = float(os.getenv("TP_ATR_MULTIPLIER", 3.5)) 
-# MIN_RR_RATIO zaten yukarıda tanımlandı (satır 117)
+# --- v9.2 SMART SL/TP System Parameters ---
+# ATR Bazlı Sistem (SL_TP_METHOD='ATR' veya 'SMART')
+ATR_SL_MULTIPLIER = float(os.getenv("ATR_SL_MULTIPLIER", 2.0))  # SL = ATR × 2.0
+ATR_TP_MULTIPLIER = float(os.getenv("ATR_TP_MULTIPLIER", 4.0))  # TP = ATR × 4.0 (R:R=2.0)
+
+# Eski değişken isimleri (geriye dönük uyumluluk)
+SL_ATR_MULTIPLIER = ATR_SL_MULTIPLIER
+TP_ATR_MULTIPLIER = ATR_TP_MULTIPLIER
 
 # Strateji Filtre Ayarları
 MAX_ATR_PERCENT = float(os.getenv("MAX_ATR_PERCENT", 5.0)) 
