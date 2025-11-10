@@ -321,6 +321,27 @@ STAGE1_MIN_VOL_RATIO = float(os.getenv("STAGE1_MIN_VOL_RATIO", 0.95))  # 1.05 �
 STAGE1_MIN_MOMENTUM_SCORE = float(os.getenv("STAGE1_MIN_MOMENTUM_SCORE", 0.0))  # 0.4 → 0.0 (momentum bariyeri kaldırıldı)
 STAGE1_MAX_CANDIDATES = int(os.getenv("STAGE1_MAX_CANDIDATES", 400))  # 25 → 1000 (fiilen sınırsız ~ tüm futures)
 
+# --- Breakout Micro-Relaxation Toggles (Safe defaults) ---
+BREAKOUT_ADX_DELTA_TOLERANCE = float(os.getenv("BREAKOUT_ADX_DELTA_TOLERANCE", 0.5))  # ADX >= prevADX-0.5 kabul
+BREAKOUT_ENABLE_MACD_RELAXED = bool(int(os.getenv("BREAKOUT_ENABLE_MACD_RELAXED", 0)))  # Kapalı başla
+BREAKOUT_MACD_RELAXED_MIN_INCREASING = int(os.getenv("BREAKOUT_MACD_RELAXED_MIN_INCREASING", 2))
+# RSI core/extended bantları (LONG)
+BREAKOUT_RSI_CORE_LOW = int(os.getenv("BREAKOUT_RSI_CORE_LOW", 52))
+BREAKOUT_RSI_CORE_HIGH = int(os.getenv("BREAKOUT_RSI_CORE_HIGH", 68))
+BREAKOUT_RSI_EXT_LOW = int(os.getenv("BREAKOUT_RSI_EXT_LOW", 48))
+BREAKOUT_RSI_EXT_HIGH = int(os.getenv("BREAKOUT_RSI_EXT_HIGH", 72))
+# RSI core/extended bantları (SHORT)
+BREAKOUT_RSI_CORE_SHORT_LOW = int(os.getenv("BREAKOUT_RSI_CORE_SHORT_LOW", 30))
+BREAKOUT_RSI_CORE_SHORT_HIGH = int(os.getenv("BREAKOUT_RSI_CORE_SHORT_HIGH", 50))
+BREAKOUT_RSI_EXT_SHORT_LOW = int(os.getenv("BREAKOUT_RSI_EXT_SHORT_LOW", 28))
+BREAKOUT_RSI_EXT_SHORT_HIGH = int(os.getenv("BREAKOUT_RSI_EXT_SHORT_HIGH", 52))
+BREAKOUT_REQUIRE_EXTRA_CONFIRM_OUTSIDE_CORE = bool(int(os.getenv("BREAKOUT_REQUIRE_EXTRA_CONFIRM_OUTSIDE_CORE", 1)))
+
+# Pullback VWAP toleransı (çok hafif gevşetme, ATR yüksekse genişletme kapalı)
+PULLBACK_VWAP_TOLERANCE_LONG = float(os.getenv("PULLBACK_VWAP_TOLERANCE_LONG", 0.0115))  # 1.15%
+PULLBACK_VWAP_TOLERANCE_SHORT = float(os.getenv("PULLBACK_VWAP_TOLERANCE_SHORT", 0.0115))  # 1.15%
+PULLBACK_VWAP_MAX_ATR_PERCENT_FOR_EXTENSION = float(os.getenv("PULLBACK_VWAP_MAX_ATR_PERCENT_FOR_EXTENSION", 4.0))
+
 # --- Probabilistic Position Sizing ---
 ENABLE_PROBABILISTIC_SIZING = bool(int(os.getenv("ENABLE_PROBABILISTIC_SIZING", 1)))
 PROB_SIZING_MIN = float(os.getenv("PROB_SIZING_MIN", 0.45))  # Min risk yüzdesi ölçeği

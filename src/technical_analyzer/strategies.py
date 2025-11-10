@@ -6,6 +6,39 @@ import numpy as np
 import sys
 import os
 import re
+import time
+
+# --- Strategy Metrics (Instrumentation) ---
+strategy_metrics = {
+    'breakout_layer1_pass': 0,
+    'breakout_layer2_pass': 0,
+    'breakout_layer2_fail': 0,
+    'breakout_relaxed_adx_used': 0,
+    'breakout_relaxed_macd_used': 0,
+    'breakout_extended_rsi_usage': 0,
+    'breakout_layer3_fail': 0,
+    'breakout_layer4_fail': 0,
+    'breakout_layer5_fail': 0,
+    'pullback_vwap_extended_usage': 0
+}
+_last_metrics_dump_ts = time.time()
+
+def _maybe_dump_metrics(config):
+    """Periyodik olarak metriği logla (varsayılan 30dk)."""
+    global _last_metrics_dump_ts
+    interval = getattr(config, 'METRICS_DUMP_INTERVAL_SECONDS', 1800)
+    now = time.time()
+    if now - _last_metrics_dump_ts >= interval:
+        msg = (
+            f"METRICS ROLLUP | L1_pass={strategy_metrics['breakout_layer1_pass']} "
+            f"L2_pass={strategy_metrics['breakout_layer2_pass']} L2_fail={strategy_metrics['breakout_layer2_fail']} "
+            f"ADX_relaxed={strategy_metrics['breakout_relaxed_adx_used']} MACD_relaxed={strategy_metrics['breakout_relaxed_macd_used']} "
+            f"RSI_ext_used={strategy_metrics['breakout_extended_rsi_usage']} L3_fail={strategy_metrics['breakout_layer3_fail']} "
+            f"L4_fail={strategy_metrics['breakout_layer4_fail']} L5_fail={strategy_metrics['breakout_layer5_fail']} "
+            f"Pullback_VWAP_ext={strategy_metrics['pullback_vwap_extended_usage']}"
+        )
+        logger.info(msg)
+        _last_metrics_dump_ts = now
 
 # Proje kök dizinini ayarla
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -236,7 +269,7 @@ def check_institutional_trend_1d(df_1d: pd.DataFrame) -> tuple:
         return None, f"1D trend karışık - breakout yok (Close={close:.2f}, EMA hierarşisi bozuk)"
 
 
-def check_momentum_buildup_4h(df_4h: pd.DataFrame, direction: str) -> tuple:
+def check_momentum_buildup_4h(df_4h: pd.DataFrame, direction: str, config) -> tuple:
     """
     Layer 2 for BREAKOUT: 4H'de momentum birikmesi kontrolü.
     RSI momentum zone + artan MACD + artan ADX.
@@ -261,30 +294,79 @@ def check_momentum_buildup_4h(df_4h: pd.DataFrame, direction: str) -> tuple:
     adx = last['adx14']
     prev_adx = prev['adx14']
     
-    # RSI momentum zone kontrolü
+    # --- RSI Core / Extended Bantları (Konfigürasyondan) ---
+    core_low_long = getattr(config, 'BREAKOUT_RSI_CORE_LOW', 52)
+    core_high_long = getattr(config, 'BREAKOUT_RSI_CORE_HIGH', 68)
+    ext_low_long = getattr(config, 'BREAKOUT_RSI_EXT_LOW', 48)
+    ext_high_long = getattr(config, 'BREAKOUT_RSI_EXT_HIGH', 72)
+
+    core_low_short = getattr(config, 'BREAKOUT_RSI_CORE_SHORT_LOW', 30)
+    core_high_short = getattr(config, 'BREAKOUT_RSI_CORE_SHORT_HIGH', 50)
+    ext_low_short = getattr(config, 'BREAKOUT_RSI_EXT_SHORT_LOW', 28)
+    ext_high_short = getattr(config, 'BREAKOUT_RSI_EXT_SHORT_HIGH', 52)
+    require_extra = getattr(config, 'BREAKOUT_REQUIRE_EXTRA_CONFIRM_OUTSIDE_CORE', True)
+
+    extended_rsi_used = False
     if direction == 'LONG':
-        if not (50 <= rsi <= 70):
-            return False, f"4H RSI momentum zone dışında ({rsi:.1f}, gerekli: 50-70)"
-    elif direction == 'SHORT':
-        if not (30 <= rsi <= 50):
-            return False, f"4H RSI momentum zone dışında ({rsi:.1f}, gerekli: 30-50)"
+        if not (core_low_long <= rsi <= core_high_long):
+            # Extended banda düşerse ek doğrulama gerek
+            if ext_low_long <= rsi <= ext_high_long:
+                # Ek doğrulama: ADX hafif yükselme + son 3 MACD diflerinden >=1 pozitif
+                macd_hist_recent = df_4h['macd_hist'].iloc[-5:]
+                macd_diff_positive = (macd_hist_recent.diff() > 0).sum() >= 1
+                if require_extra and not macd_diff_positive:
+                    return False, f"4H RSI extended bölgede ama MACD momentum zayıf (rsi={rsi:.1f})"
+                extended_rsi_used = True
+            else:
+                return False, f"4H RSI momentum zone dışında ({rsi:.1f}, core:{core_low_long}-{core_high_long})"
+    else:  # SHORT
+        if not (core_low_short <= rsi <= core_high_short):
+            if ext_low_short <= rsi <= ext_high_short:
+                macd_hist_recent = df_4h['macd_hist'].iloc[-5:]
+                macd_diff_negative = (macd_hist_recent.diff() < 0).sum() >= 1
+                if require_extra and not macd_diff_negative:
+                    return False, f"4H RSI extended bölgede ama MACD momentum zayıf (rsi={rsi:.1f})"
+                extended_rsi_used = True
+            else:
+                return False, f"4H RSI momentum zone dışında ({rsi:.1f}, core:{core_low_short}-{core_high_short})"
     
     # MACD histogram trending kontrolü
     macd_hist_recent = df_4h['macd_hist'].iloc[-5:]
+    macd_relaxed_used = False
     if direction == 'LONG':
         increasing = (macd_hist_recent.diff() > 0).sum()
         if increasing < 3:
-            return False, f"4H MACD histogram artan değil ({increasing}/5)"
+            # Relaxed kuralı devrede mi?
+            if (
+                getattr(config, 'BREAKOUT_ENABLE_MACD_RELAXED', False)
+                and increasing >= getattr(config, 'BREAKOUT_MACD_RELAXED_MIN_INCREASING', 2)
+                and macd_hist_recent.iloc[-1] > macd_hist_recent.iloc[-2]
+            ):
+                macd_relaxed_used = True
+            else:
+                return False, f"4H MACD histogram artan değil ({increasing}/5)"
     elif direction == 'SHORT':
         decreasing = (macd_hist_recent.diff() < 0).sum()
         if decreasing < 3:
-            return False, f"4H MACD histogram azalan değil ({decreasing}/5)"
+            if (
+                getattr(config, 'BREAKOUT_ENABLE_MACD_RELAXED', False)
+                and decreasing >= getattr(config, 'BREAKOUT_MACD_RELAXED_MIN_INCREASING', 2)
+                and macd_hist_recent.iloc[-1] < macd_hist_recent.iloc[-2]
+            ):
+                macd_relaxed_used = True
+            else:
+                return False, f"4H MACD histogram azalan değil ({decreasing}/5)"
     
     # ADX yükseliyor mu?
-    if adx <= prev_adx:
-        return False, f"4H ADX düşüyor ({adx:.1f} <= {prev_adx:.1f})"
-    
-    return True, f"4H momentum building (RSI:{rsi:.1f}, ADX↑:{adx:.1f})"
+    tolerance = getattr(config, 'BREAKOUT_ADX_DELTA_TOLERANCE', 0.0)
+    adx_relaxed_used = False
+    if adx + tolerance < prev_adx:
+        return False, f"4H ADX düşüyor ({adx:.1f} < {prev_adx:.1f} - tol:{tolerance:.2f})"
+    elif adx < prev_adx:
+        adx_relaxed_used = True  # Tolerance sayesinde kabul
+
+    return True, f"4H momentum building (RSI:{rsi:.1f}, ADX:{adx:.1f}↑)", extended_rsi_used, macd_relaxed_used, adx_relaxed_used
+
 
 
 def check_squeeze_quality_1h(df_1h: pd.DataFrame) -> tuple:
@@ -1137,10 +1219,15 @@ def find_pullback_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.Dat
         if main_direction == 'LONG':
             # v5.0: RSI 30-50 → 25-55 (daha esnek)
             if (25 <= rsi_1h <= 55) and (macd_hist_1h <= 0):
-                # v5.0: VWAP toleransı 0.5% → 1.0%
-                if close_1h >= vwap_1h * 0.99:  # ±1% tolerance
+                # Dinamik VWAP toleransı (config + ATR guard)
+                base_tol = 0.01  # 1%
+                cfg_tol = getattr(config, 'PULLBACK_VWAP_TOLERANCE_LONG', 0.0115)
+                tol = min(cfg_tol, base_tol) if ((last_1h['atr14']/close_1h)*100) > getattr(config, 'PULLBACK_VWAP_MAX_ATR_PERCENT_FOR_EXTENSION', 4.0) else max(cfg_tol, base_tol)
+                if close_1h >= vwap_1h * (1 - tol):
                     pullback_confirmed = True
-                    logger.info(f"   ✅ LONG Pullback onaylandı: RSI={rsi_1h:.1f}, MACD<0, Price near VWAP")
+                    logger.info(f"   ✅ LONG Pullback onaylandı: RSI={rsi_1h:.1f}, MACD<0, Price near VWAP (tol={tol*100:.2f}%)")
+                    if tol > base_tol:
+                        strategy_metrics['pullback_vwap_extended_usage'] += 1
                 else:
                     logger.info(f"   Pullback REJECTED: Price too far below VWAP ({close_1h:.6f} vs {vwap_1h:.6f})")
             else:
@@ -1148,10 +1235,14 @@ def find_pullback_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.Dat
         elif main_direction == 'SHORT':
             # v5.0: RSI 50-70 → 45-75 (daha esnek)
             if (45 <= rsi_1h <= 75) and (macd_hist_1h >= 0):
-                # v5.0: VWAP toleransı 0.5% → 1.0%
-                if close_1h <= vwap_1h * 1.01:  # ±1% tolerance
+                base_tol = 0.01
+                cfg_tol = getattr(config, 'PULLBACK_VWAP_TOLERANCE_SHORT', 0.0115)
+                tol = min(cfg_tol, base_tol) if ((last_1h['atr14']/close_1h)*100) > getattr(config, 'PULLBACK_VWAP_MAX_ATR_PERCENT_FOR_EXTENSION', 4.0) else max(cfg_tol, base_tol)
+                if close_1h <= vwap_1h * (1 + tol):
                     pullback_confirmed = True
-                    logger.info(f"   ✅ SHORT Pullback onaylandı: RSI={rsi_1h:.1f}, MACD>0, Price near VWAP")
+                    logger.info(f"   ✅ SHORT Pullback onaylandı: RSI={rsi_1h:.1f}, MACD>0, Price near VWAP (tol={tol*100:.2f}%)")
+                    if tol > base_tol:
+                        strategy_metrics['pullback_vwap_extended_usage'] += 1
                 else:
                     logger.info(f"   Pullback REJECTED: Price too far above VWAP ({close_1h:.6f} vs {vwap_1h:.6f})")
             else:
@@ -1310,16 +1401,32 @@ def find_breakout_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.Dat
     logger.info(f"   ✅ Layer 1: {trend_msg} → ONLY {direction} breakouts")
     
     # ========== Layer 2: 4H Momentum Buildup ==========
-    momentum_ok, momentum_msg = check_momentum_buildup_4h(df_4h, direction)
+    momentum_result = check_momentum_buildup_4h(df_4h, direction, config)
+    if isinstance(momentum_result, tuple) and len(momentum_result) == 5:
+        momentum_ok, momentum_msg, extended_rsi_used, macd_relaxed_used, adx_relaxed_used = momentum_result
+    else:
+        momentum_ok, momentum_msg = momentum_result[0], momentum_result[1]
+        extended_rsi_used = macd_relaxed_used = adx_relaxed_used = False
     if not momentum_ok:
         logger.info(f"   ❌ Layer 2 FAILED: {momentum_msg}")
+        strategy_metrics['breakout_layer2_fail'] += 1
+        _maybe_dump_metrics(config)
         return None
     logger.info(f"   ✅ Layer 2: {momentum_msg}")
+    strategy_metrics['breakout_layer2_pass'] += 1
+    if extended_rsi_used:
+        strategy_metrics['breakout_extended_rsi_usage'] += 1
+    if macd_relaxed_used:
+        strategy_metrics['breakout_relaxed_macd_used'] += 1
+    if adx_relaxed_used:
+        strategy_metrics['breakout_relaxed_adx_used'] += 1
     
     # ========== Layer 3: 1H Squeeze Quality ==========
     squeeze_ok, squeeze_msg = check_squeeze_quality_1h(df_1h)
     if not squeeze_ok:
         logger.info(f"   ❌ Layer 3 FAILED: {squeeze_msg}")
+        strategy_metrics['breakout_layer3_fail'] += 1
+        _maybe_dump_metrics(config)
         return None
     logger.info(f"   ✅ Layer 3: {squeeze_msg}")
     
@@ -1327,6 +1434,8 @@ def find_breakout_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.Dat
     vol_ok, vol_msg = check_volume_expansion(df_1h)
     if not vol_ok:
         logger.info(f"   ❌ Layer 4 FAILED: {vol_msg}")
+        strategy_metrics['breakout_layer4_fail'] += 1
+        _maybe_dump_metrics(config)
         return None
     logger.info(f"   ✅ Layer 4: {vol_msg}")
     
@@ -1334,6 +1443,8 @@ def find_breakout_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.Dat
     strength_ok, strength_msg = check_breakout_strength(df_1h, direction)
     if not strength_ok:
         logger.info(f"   ❌ Layer 5 FAILED: {strength_msg}")
+        strategy_metrics['breakout_layer5_fail'] += 1
+        _maybe_dump_metrics(config)
         return None
     logger.info(f"   ✅ Layer 5: {strength_msg}")
     
@@ -1341,7 +1452,7 @@ def find_breakout_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.Dat
     required = ['close', 'bb_upper', 'bb_lower', 'supertrend_direction']
     if not all(col in df_1h.columns for col in required):
         logger.warning(f"   ❌ Layer 6 FAILED: BB/Supertrend kolonları eksik")
-        return None
+        strategy_metrics['breakout_layer1_pass'] += 1
     
     last = df_1h.iloc[-1]
     if last[required].isna().any():
