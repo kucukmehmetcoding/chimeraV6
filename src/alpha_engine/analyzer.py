@@ -143,13 +143,6 @@ def calculate_quality_grade(symbol: str, config: object, direction: str) -> str:
     logger.info(f"   '{symbol}' ({direction}) için Toplam Sentiment Skoru: {grade_score:.2f} → Kalite Notu: {final_grade}")
     logger.debug(f"   Detay: F&G={fng_index}, Haber={news_sentiment}, Reddit={reddit_sentiment}, Trends={trends_score}")
     return final_grade
-    final_grade = 'C'
-    if grade_score >= 3.0: final_grade = 'A'
-    elif grade_score >= 1.5: final_grade = 'B'
-    elif grade_score <= -2.5: final_grade = 'D'
-    
-    logger.info(f"'{symbol}' ({direction}) için hesaplanan kalite notu: {final_grade} (Toplam Skor: {grade_score:.2f})")
-    return final_grade
 
 # --- Test Kodu ---
 if __name__ == '__main__':

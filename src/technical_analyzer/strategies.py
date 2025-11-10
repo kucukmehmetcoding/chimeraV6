@@ -376,7 +376,7 @@ def check_volume_expansion(df_1h: pd.DataFrame) -> tuple:
     if not progressive:
         return False, "Volume artışı progressive değil"
     
-        return True, f"Volume EXPLOSION ({vol_ratio:.1f}x, +{vol_increase:.0f}%, progressive)"
+    return True, f"Volume EXPLOSION ({vol_ratio:.1f}x, +{vol_increase:.0f}%, progressive)"
 
 
 def check_breakout_strength(df_1h: pd.DataFrame, direction: str) -> tuple:
@@ -1180,8 +1180,46 @@ def find_pullback_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.Dat
             logger.info(f"   Pullback REJECTED: Aşırı Volatilite (ATR={atr_percent:.2f}% > {max_atr_percent}%)")
             return None
         
-        logger.info(f"   ✅ Pullback {main_direction} sinyali bulundu! (v5.0 OPTIMIZED: Daha esnek RSI+VWAP)")
-        signal = {'direction': main_direction}
+        # 🆕 v9.3: Signal Strength hesaplama (0-100 arası)
+        signal_strength = 50.0  # Base score
+        
+        # RSI optimal zone bonus (LONG: 35-45, SHORT: 55-65)
+        if main_direction == 'LONG':
+            if 35 <= rsi_1h <= 45:
+                signal_strength += 15
+            elif 25 <= rsi_1h < 35 or 45 < rsi_1h <= 55:
+                signal_strength += 7
+        else:  # SHORT
+            if 55 <= rsi_1h <= 65:
+                signal_strength += 15
+            elif 45 <= rsi_1h < 55 or 65 < rsi_1h <= 75:
+                signal_strength += 7
+        
+        # VWAP proximity bonus (±0.5% = +10, ±1% = +5)
+        vwap_distance_percent = abs((close_1h / vwap_1h - 1) * 100) if vwap_1h > 0 else 999
+        if vwap_distance_percent <= 0.5:
+            signal_strength += 10
+        elif vwap_distance_percent <= 1.0:
+            signal_strength += 5
+        
+        # Volume moderation bonus (düşük hacim = daha iyi pullback)
+        vol_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
+        if vol_ratio < 1.2:
+            signal_strength += 10
+        elif vol_ratio < 1.5:
+            signal_strength += 5
+        
+        # Low volatility bonus
+        if atr_percent < 2.0:
+            signal_strength += 10
+        elif atr_percent < 3.0:
+            signal_strength += 5
+        
+        signal_strength = min(signal_strength, 100.0)  # Cap at 100
+        logger.info(f"   💯 Pullback Signal Strength: {signal_strength:.1f}/100")
+        
+        logger.info(f"   ✅ Pullback {main_direction} sinyali bulundu! (v9.3: Signal Strength = {signal_strength:.1f})")
+        signal = {'direction': main_direction, 'signal_strength': signal_strength}
     except IndexError: logger.warning("   Pullback: Yetersiz veri."); return None
     except Exception as e: logger.error(f"   Pullback: Hata: {e}", exc_info=True); return None
     return signal
@@ -1239,8 +1277,11 @@ def find_mean_reversion_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: 
         logger.info(f"   ✅ [{direction}] Layer 5: {struct_msg}")
         
         # ========== ALL LAYERS PASSED ==========
+        # 🆕 v9.3: Signal Strength hesaplama (5 layer geçti = 100 puan)
+        signal_strength = 100.0  # Mean Reversion tüm layer'ları geçerse ultra güçlü
+        logger.info(f"   💯 Mean Reversion Signal Strength: {signal_strength:.1f}/100 (5/5 layers)")
         logger.info(f"   🎯🎯🎯 MEAN REVERSION {direction} SIGNAL VALIDATED - ULTRA PRECISION! 🎯🎯🎯")
-        return {'direction': direction}
+        return {'direction': direction, 'signal_strength': signal_strength}
     
     # Her iki direction da başarısız
     logger.debug("   Mean Reversion: Her iki direction da layer'ları geçemedi")
@@ -1331,8 +1372,11 @@ def find_breakout_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.Dat
     logger.info(f"   ✅ Layer 6: Direction confirmation OK (Close vs BB + Supertrend)")
     
     # ========== ALL LAYERS PASSED ==========
-    logger.info(f"   🚀🚀🚀 BREAKOUT {direction} SIGNAL VALIDATED - INSTITUTIONAL GRADE! 🚀🚀🚀")
-    return {'direction': direction}
+    # 🆕 v9.3: Signal Strength hesaplama (6 layer geçti = 100 puan)
+    signal_strength = 100.0  # Breakout tüm layer'ları geçerse ultra güçlü
+    logger.info(f"   � Breakout Signal Strength: {signal_strength:.1f}/100 (6/6 layers)")
+    logger.info(f"   �🚀🚀🚀 BREAKOUT {direction} SIGNAL VALIDATED - INSTITUTIONAL GRADE! 🚀🚀🚀")
+    return {'direction': direction, 'signal_strength': signal_strength}
 
 # --- YENİ EKLENDİ: Gelişmiş Scalp Stratejisi (Aşama 4) ---
 
@@ -1420,8 +1464,11 @@ def find_advanced_scalp_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: 
     logger.info(f"   ✅ Layer 5: {rr_msg}")
     
     # ========== ALL LAYERS PASSED ==========
+    # 🆕 v9.3: Signal Strength hesaplama (5 layer geçti = 95 puan, scalp daha riskli)
+    signal_strength = 95.0  # Scalp layer'ları geçti ama inherently riskli
+    logger.info(f"   💯 Scalp Signal Strength: {signal_strength:.1f}/100 (5/5 layers)")
     logger.info(f"   ⚡⚡⚡ SCALP {scalp_direction} SIGNAL VALIDATED - SMART SCALPING! ⚡⚡⚡")
-    return {'direction': scalp_direction}
+    return {'direction': scalp_direction, 'signal_strength': signal_strength}
 
 
 # --- Test Kodu ---

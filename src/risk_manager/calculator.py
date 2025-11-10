@@ -62,11 +62,15 @@ def calculate_structural_sl_tp(direction: str, entry_price: float, levels: dict,
 
 # --- YENİ EKLENDİ v6.0: Yüzde Tabanlı SL/TP Hesaplayıcı (7 Kasım 2025) ---
 
-def calculate_percentage_sl_tp(entry_price: float, direction: str, config: object) -> Optional[Dict[str, float]]:
+def calculate_percentage_sl_tp(entry_price: float, direction: str, config: object, atr: float = None) -> Optional[Dict[str, float]]:
     """
     Giriş fiyatına göre kaldıraçlı yüzde tabanlı SL/TP hesaplar.
     
-    v9.2 GÜNCELEME: Partial TP kapalıysa tek TP kullanır.
+    v9.3 KRITIK DÜZELTME: ATR bazlı volatilite uyarlaması eklendi!
+    - Düşük volatilite (ATR/Price < 1%): SL/TP %20 daralır (çok sıkı)
+    - Yüksek volatilite (ATR/Price > 3%): SL/TP %50 genişler (çok geniş olmaz)
+    
+    v9.2 GÜNCELME: Partial TP kapalıysa tek TP kullanır.
     
     Sistem (v7.0 DÜZELTME - Kaldıraç dikkate alınıyor):
     - SL: Pozisyon değerinin %10 zararı = Spot fiyatın (10% / kaldıraç) mesafesi
@@ -98,6 +102,31 @@ def calculate_percentage_sl_tp(entry_price: float, direction: str, config: objec
             position_tp_percent = getattr(config, 'TP_PROFIT_PERCENT', 30.0)
             position_tp1_percent = None  # Kullanılmayacak
             position_tp2_percent = position_tp_percent  # Ana TP
+        
+        # 🆕 v9.3: VOLATİLİTE UYARLAMASI
+        volatility_multiplier = 1.0
+        if atr and atr > 0 and entry_price > 0:
+            atr_percent = (atr / entry_price) * 100
+            
+            if atr_percent < 1.0:
+                # Düşük volatilite: SL/TP daralır (%20 azalt)
+                volatility_multiplier = 0.80
+                logger.debug(f"   Düşük volatilite tespit edildi (ATR: {atr_percent:.2f}%), SL/TP %20 daraltıldı")
+            elif atr_percent > 3.0:
+                # Yüksek volatilite: SL/TP genişler (%50 artır)
+                volatility_multiplier = 1.50
+                logger.debug(f"   Yüksek volatilite tespit edildi (ATR: {atr_percent:.2f}%), SL/TP %50 genişletildi")
+            else:
+                logger.debug(f"   Normal volatilite (ATR: {atr_percent:.2f}%), standart SL/TP kullanılıyor")
+        
+        # Volatilite ile ayarlanmış yüzde değerleri
+        position_sl_percent *= volatility_multiplier
+        if partial_tp_enabled:
+            position_tp1_percent *= volatility_multiplier
+            position_tp2_percent *= volatility_multiplier
+        else:
+            position_tp_percent *= volatility_multiplier
+            position_tp2_percent = position_tp_percent
         
         # Kaldıraç değeri
         leverage = getattr(config, 'FUTURES_LEVERAGE', 8)

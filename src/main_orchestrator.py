@@ -493,7 +493,8 @@ def main_scan_cycle():
                     logger.error(f"{symbol} strateji hatası: {e}", exc_info=True)
 
                 if technical_signal:
-                    logger.info(f"✅ {symbol}: Teknik {coin_specific_strategy} {technical_signal['direction']} sinyali bulundu.")
+                    signal_strength = technical_signal.get('signal_strength', 50.0)  # Default: 50
+                    logger.info(f"✅ {symbol}: Teknik {coin_specific_strategy} {technical_signal['direction']} sinyali bulundu (Güç: {signal_strength:.1f}/100).")
                     
                     # SL/TP hesaplama için doğru DataFrame seç
                     df_levels = None
@@ -534,8 +535,8 @@ def main_scan_cycle():
                             sl_tp = risk_calculator.calculate_dynamic_sl_tp(current_price, current_atr, signal_direction, config, strategy=coin_specific_strategy)
                     
                     elif sl_tp_method == 'PERCENTAGE':
-                        # Yüzde bazlı (mevcut sistem)
-                        sl_tp = risk_calculator.calculate_percentage_sl_tp(current_price, signal_direction, config)
+                        # Yüzde bazlı (volatilite uyumlu - v9.3)
+                        sl_tp = risk_calculator.calculate_percentage_sl_tp(current_price, signal_direction, config, current_atr)
                     
                     elif sl_tp_method == 'ATR':
                         # ATR bazlı (volatilite uyumlu)
@@ -595,6 +596,7 @@ def main_scan_cycle():
                                 'partial_tp_1_price': partial_tp_1_price,  # YENİ: Partial TP fiyatı
                                 'rr_ratio': rr,
                                 'quality_grade': quality_grade,
+                                'signal_strength': signal_strength,  # 🆕 v9.3: Sinyal gücü
                                 'atr': atr_value,
                                 'fng_index_at_signal': fng_score if isinstance(fng_score, int) else None,
                                 'news_sentiment_at_signal': news_score_val,
@@ -621,9 +623,18 @@ def main_scan_cycle():
         final_signals_to_open = []
         
         if candidate_signals:
+            # 🆕 v9.3: Signal strength'e göre sıralama (önce kalite, sonra signal_strength, sonra RR)
             quality_map = {'A': 1, 'B': 2, 'C': 3, 'D': 4}
-            candidate_signals.sort(key=lambda s: (quality_map.get(s.get('quality_grade', 'D'), 5), -s.get('rr_ratio', 0)))
-            logger.info(f"Aday sinyaller sıralandı (En iyi ilk: {candidate_signals[0]['symbol']} {candidate_signals[0]['strategy']} {candidate_signals[0]['quality_grade']} RR:{candidate_signals[0]['rr_ratio']:.2f})")
+            candidate_signals.sort(key=lambda s: (
+                quality_map.get(s.get('quality_grade', 'D'), 5),  # Önce kalite
+                -s.get('signal_strength', 0),  # Sonra sinyal gücü (yüksek = iyi)
+                -s.get('rr_ratio', 0)  # Son olarak RR
+            ))
+            
+            top_signal = candidate_signals[0]
+            logger.info(f"🏆 EN İYİ SİNYAL: {top_signal['symbol']} {top_signal['strategy']} "
+                       f"Grade:{top_signal['quality_grade']} Strength:{top_signal.get('signal_strength', 0):.1f} "
+                       f"RR:{top_signal['rr_ratio']:.2f}")
             
             max_open = getattr(config, 'MAX_OPEN_POSITIONS', 10)
             base_risk = getattr(config, 'BASE_RISK_PERCENT', 1.0)
@@ -873,10 +884,12 @@ def main_scan_cycle():
                                 else:
                                     logger.info(f"   ✅ Kelly Kontrolü OK: ${current_position_value:.2f} <= ${kelly_size:.2f}")
                         
-                        except ImportError:
-                            logger.debug(f"   Kelly calculator modülü yok, kontrol atlandı")
+                        except ImportError as ie:
+                            logger.warning(f"   ⚠️ Kelly calculator modülü yüklenemedi: {ie}")
+                            logger.warning(f"   💡 Kelly kontrolü atlandı - risk_manager/kelly_calculator.py dosyasını kontrol edin")
                         except Exception as kelly_err:
-                            logger.debug(f"   Kelly hesaplama atlandı: {kelly_err}")
+                            logger.error(f"   ❌ Kelly hesaplama hatası: {kelly_err}", exc_info=True)
+                            logger.warning(f"   Kelly kontrolü atlandı, pozisyon boyutu değiştirilmedi")
                         
                         # 🆕 v7.1: MARGIN KONTROLÜ
                         # Pozisyon için gerekli margin'i hesapla
