@@ -319,7 +319,7 @@ ENABLE_TWO_STAGE_PIPELINE = bool(int(os.getenv("ENABLE_TWO_STAGE_PIPELINE", 1)))
 # Near-full kapsam modunda Stage-1 filtreleri gevşetildi / neredeyse pasif hale getirildi
 STAGE1_MIN_VOL_RATIO = float(os.getenv("STAGE1_MIN_VOL_RATIO", 0.95))  # 1.05 → 0.95 (hafifçe altına izin)
 STAGE1_MIN_MOMENTUM_SCORE = float(os.getenv("STAGE1_MIN_MOMENTUM_SCORE", 0.0))  # 0.4 → 0.0 (momentum bariyeri kaldırıldı)
-STAGE1_MAX_CANDIDATES = int(os.getenv("STAGE1_MAX_CANDIDATES", 1000))  # 25 → 1000 (fiilen sınırsız ~ tüm futures)
+STAGE1_MAX_CANDIDATES = int(os.getenv("STAGE1_MAX_CANDIDATES", 400))  # 25 → 1000 (fiilen sınırsız ~ tüm futures)
 
 # --- Probabilistic Position Sizing ---
 ENABLE_PROBABILISTIC_SIZING = bool(int(os.getenv("ENABLE_PROBABILISTIC_SIZING", 1)))
