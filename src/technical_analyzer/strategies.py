@@ -369,7 +369,7 @@ def check_momentum_buildup_4h(df_4h: pd.DataFrame, direction: str, config) -> tu
 
 
 
-def check_squeeze_quality_1h(df_1h: pd.DataFrame) -> tuple:
+def check_squeeze_quality_1h(df_1h: pd.DataFrame, config=None) -> tuple:
     """
     Layer 3 for BREAKOUT: Squeeze kalitesi - sadece EN İYİ sıkışmalarda breakout al.
     Sıkışma süresi (5-20 mum) + BBW alt %15'te.
@@ -396,25 +396,28 @@ def check_squeeze_quality_1h(df_1h: pd.DataFrame) -> tuple:
             break
     
     # Çok kısa sıkışma = zayıf
-    if squeeze_duration < 5:
-        return False, f"Sıkışma çok kısa ({squeeze_duration} mum < 5)"
+    min_bars = getattr(config, 'BREAKOUT_MIN_SQUEEZE_BARS', 5) if config is not None else 5
+    max_bars = getattr(config, 'BREAKOUT_MAX_SQUEEZE_BARS', 20) if config is not None else 20
+    if squeeze_duration < min_bars:
+        return False, f"Sıkışma çok kısa ({squeeze_duration} mum < {min_bars})"
     
     # Çok uzun sıkışma = enerji tükendi
-    if squeeze_duration > 20:
-        return False, f"Sıkışma çok uzun ({squeeze_duration} mum > 20) - enerji tükendi"
+    if squeeze_duration > max_bars:
+        return False, f"Sıkışma çok uzun ({squeeze_duration} mum > {max_bars}) - enerji tükendi"
     
     # BBW percentile kontrolü (alt %15'te mi?)
     recent_bbw = df_1h['bbw'].iloc[-100:]
     current_bbw = df_1h.iloc[-1]['bbw']
     percentile = (recent_bbw < current_bbw).sum() / len(recent_bbw) * 100
     
-    if percentile > 15:
-        return False, f"BBW yeterince düşük değil ({percentile:.0f}. percentile, gerekli: <15)"
+    bbw_percentile_max = getattr(config, 'BREAKOUT_BBW_PERCENTILE_MAX', 15.0) if config is not None else 15.0
+    if percentile > bbw_percentile_max:
+        return False, f"BBW yeterince düşük değil ({percentile:.0f}. percentile, gerekli: <{bbw_percentile_max:.0f})"
     
     return True, f"Squeeze PERFECT (Süre:{squeeze_duration} mum, BBW:{percentile:.0f}. %)"
 
 
-def check_volume_expansion(df_1h: pd.DataFrame) -> tuple:
+def check_volume_expansion(df_1h: pd.DataFrame, config=None) -> tuple:
     """
     Layer 4 for BREAKOUT: Kurumsal hacim patlaması kontrolü.
     2.5x ortalama hacim + son muma göre %30+ artış + progressive artış.
@@ -439,16 +442,24 @@ def check_volume_expansion(df_1h: pd.DataFrame) -> tuple:
     if avg_vol <= 0:
         return False, "volume_sma20 sıfır veya negatif"
     
-    # Hacim 2.5x üstünde mi?
+    # Hacim eşiği (varsayılan 2.5x, gevşeme fazında düşürülebilir)
     vol_ratio = vol / avg_vol
-    if vol_ratio < 2.5:
-        return False, f"Volume yetersiz ({vol_ratio:.1f}x < 2.5x)"
+    if config is not None and getattr(config, 'ENABLE_BREAKOUT_RELAX_PHASE', False):
+        vol_min = getattr(config, 'BREAKOUT_VOLUME_RATIO_MIN_RELAXED', 2.25)
+    else:
+        vol_min = 2.5
+    if vol_ratio < vol_min:
+        return False, f"Volume yetersiz ({vol_ratio:.1f}x < {vol_min:.2f}x)"
     
-    # Son muma göre %30+ artış var mı?
+    # Son muma göre artış (%30 varsayılan, gevşeme fazında %27)
     if prev_vol > 0:
         vol_increase = ((vol / prev_vol) - 1) * 100
-        if vol_increase < 30:
-            return False, f"Volume artışı düşük ({vol_increase:.0f}% < 30%)"
+        if config is not None and getattr(config, 'ENABLE_BREAKOUT_RELAX_PHASE', False):
+            inc_min = getattr(config, 'BREAKOUT_VOLUME_INCREASE_MIN_RELAXED', 27.0)
+        else:
+            inc_min = 30.0
+        if vol_increase < inc_min:
+            return False, f"Volume artışı düşük ({vol_increase:.0f}% < {inc_min:.0f}%)"
     else:
         return False, "Önceki volume sıfır"
     
@@ -461,7 +472,7 @@ def check_volume_expansion(df_1h: pd.DataFrame) -> tuple:
     return True, f"Volume EXPLOSION ({vol_ratio:.1f}x, +{vol_increase:.0f}%, progressive)"
 
 
-def check_breakout_strength(df_1h: pd.DataFrame, direction: str) -> tuple:
+def check_breakout_strength(df_1h: pd.DataFrame, direction: str, config=None) -> tuple:
     """
     Layer 5 for BREAKOUT: Breakout gücü kontrolü.
     BB kırılma mesafesi (%0.3+) + mum body gücü (%60+) + önceki mum momentum.
@@ -495,16 +506,24 @@ def check_breakout_strength(df_1h: pd.DataFrame, direction: str) -> tuple:
             return False, "bb_upper sıfır veya negatif"
         
         breakout_distance = ((close - bb_upper) / bb_upper) * 100
-        if breakout_distance < 0.3:
-            return False, f"Breakout zayıf ({breakout_distance:.2f}% < 0.3%)"
+        if config is not None and getattr(config, 'ENABLE_BREAKOUT_RELAX_PHASE', False):
+            dist_min = getattr(config, 'BREAKOUT_DISTANCE_MIN_RELAXED', 0.27)
+        else:
+            dist_min = 0.30
+        if breakout_distance < dist_min:
+            return False, f"Breakout zayıf ({breakout_distance:.2f}% < {dist_min:.2f}%)"
         
         # Mum body strength
         body = close - open_price
         total_range = high - low
         body_pct = (body / total_range) * 100 if total_range > 0 else 0
         
-        if body_pct < 60:
-            return False, f"Mum body zayıf ({body_pct:.0f}% < 60%)"
+        if config is not None and getattr(config, 'ENABLE_BREAKOUT_RELAX_PHASE', False):
+            body_min = getattr(config, 'BREAKOUT_BODY_STRENGTH_MIN_RELAXED', 54.0)
+        else:
+            body_min = 60.0
+        if body_pct < body_min:
+            return False, f"Mum body zayıf ({body_pct:.0f}% < {body_min:.0f}%)"
         
         # Önceki mum pozitif mi?
         prev_close = prev['close']
@@ -520,16 +539,24 @@ def check_breakout_strength(df_1h: pd.DataFrame, direction: str) -> tuple:
             return False, "bb_lower sıfır veya negatif"
         
         breakout_distance = ((bb_lower - close) / bb_lower) * 100
-        if breakout_distance < 0.3:
-            return False, f"Breakout zayıf ({breakout_distance:.2f}% < 0.3%)"
+        if config is not None and getattr(config, 'ENABLE_BREAKOUT_RELAX_PHASE', False):
+            dist_min = getattr(config, 'BREAKOUT_DISTANCE_MIN_RELAXED', 0.27)
+        else:
+            dist_min = 0.30
+        if breakout_distance < dist_min:
+            return False, f"Breakout zayıf ({breakout_distance:.2f}% < {dist_min:.2f}%)"
         
         # Mum body strength
         body = open_price - close
         total_range = high - low
         body_pct = (body / total_range) * 100 if total_range > 0 else 0
         
-        if body_pct < 60:
-            return False, f"Mum body zayıf ({body_pct:.0f}% < 60%)"
+        if config is not None and getattr(config, 'ENABLE_BREAKOUT_RELAX_PHASE', False):
+            body_min = getattr(config, 'BREAKOUT_BODY_STRENGTH_MIN_RELAXED', 54.0)
+        else:
+            body_min = 60.0
+        if body_pct < body_min:
+            return False, f"Mum body zayıf ({body_pct:.0f}% < {body_min:.0f}%)"
         
         # Önceki mum negatif mi?
         prev_close = prev['close']
@@ -1431,7 +1458,7 @@ def find_breakout_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.Dat
     logger.info(f"   ✅ Layer 3: {squeeze_msg}")
     
     # ========== Layer 4: Volume Expansion ==========
-    vol_ok, vol_msg = check_volume_expansion(df_1h)
+    vol_ok, vol_msg = check_volume_expansion(df_1h, config)
     if not vol_ok:
         logger.info(f"   ❌ Layer 4 FAILED: {vol_msg}")
         strategy_metrics['breakout_layer4_fail'] += 1
@@ -1440,7 +1467,7 @@ def find_breakout_signal(df_1d: pd.DataFrame, df_4h: pd.DataFrame, df_1h: pd.Dat
     logger.info(f"   ✅ Layer 4: {vol_msg}")
     
     # ========== Layer 5: Breakout Strength ==========
-    strength_ok, strength_msg = check_breakout_strength(df_1h, direction)
+    strength_ok, strength_msg = check_breakout_strength(df_1h, direction, config)
     if not strength_ok:
         logger.info(f"   ❌ Layer 5 FAILED: {strength_msg}")
         strategy_metrics['breakout_layer5_fail'] += 1
