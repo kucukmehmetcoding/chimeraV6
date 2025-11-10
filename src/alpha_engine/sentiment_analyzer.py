@@ -11,6 +11,7 @@ import time
 from typing import Dict, Any, List, Optional
 import math
 from datetime import datetime, timedelta, timezone 
+from difflib import SequenceMatcher
 try:
     from pytrends.request import TrendReq
     import pandas as pd
@@ -99,10 +100,28 @@ def fetch_fear_and_greed_index() -> Optional[int]:
         response = requests.get(url, headers=headers, timeout=15); response.raise_for_status()
         soup = BeautifulSoup(response.content, 'lxml')
         index_circle = soup.find('div', class_=lambda x: x and x.startswith('fng-circle'))
-        if index_circle: index_text = index_circle.text.strip()
-        else: logger.error("F&G Index değeri sayfada bulunamadı."); return None
-        if index_text.isdigit(): index_value = int(index_text); logger.info(f"✅ F&G Index: {index_value}"); return index_value
-        else: logger.error(f"F&G Index değeri sayısal değil: '{index_text}'"); return None
+        index_text = None
+        if index_circle:
+            index_text = index_circle.text.strip()
+        else:
+            # Yedek: sayfa içeriğinde 0-100 arası ilk sayı değerini regex ile ara
+            try:
+                text_content = soup.get_text(" ", strip=True)
+                candidates = re.findall(r"\b(\d{1,3})\b", text_content)
+                for c in candidates:
+                    val = int(c)
+                    if 0 <= val <= 100:
+                        index_text = c
+                        break
+            except Exception:
+                pass
+        if not index_text:
+            logger.error("F&G Index değeri sayfada bulunamadı (fallback başarısız).")
+            return None
+        if index_text.isdigit():
+            index_value = int(index_text); logger.info(f"✅ F&G Index: {index_value}"); return index_value
+        else:
+            logger.error(f"F&G Index değeri sayısal değil: '{index_text}'"); return None
     except Exception as e: logger.error(f"F&G Index çekme hatası: {e}", exc_info=True); return None
 
 def fetch_rss_feeds(rss_urls: list) -> List[Dict[str, Any]]:
@@ -134,6 +153,7 @@ def fetch_rss_feeds(rss_urls: list) -> List[Dict[str, Any]]:
             for entry in feed_data.entries:
                 link = getattr(entry, 'link', None)
                 title = getattr(entry, 'title', None)
+                summary = getattr(entry, 'summary', None)
                 
                 if not link or link in processed_links or not title:
                     continue
@@ -145,6 +165,7 @@ def fetch_rss_feeds(rss_urls: list) -> List[Dict[str, Any]]:
                 all_headlines.append({
                     'title': title,
                     'link': link,
+                    'summary': summary,
                     'published_timestamp': published_timestamp,
                     'source': source_name
                 })
@@ -220,7 +241,21 @@ def _get_search_terms(symbol: str, config: object) -> set:
     # ... (Kod aynı, değişiklik yok) ...
     symbol_keywords_map = getattr(config, 'SENTIMENT_SYMBOL_KEYWORDS', {})
     base_symbol = symbol.replace('USDT', '').lower()
-    return set(symbol_keywords_map.get(base_symbol, [base_symbol]))
+    raw_terms = symbol_keywords_map.get(base_symbol, [base_symbol])
+    # Alias ve varyasyonları genişlet
+    terms = set()
+    for term in raw_terms:
+        if not isinstance(term, str):
+            continue
+        t = term.strip()
+        if not t:
+            continue
+        lower = t.lower()
+        upper = t.upper()
+        terms.update({lower, upper, f"#{lower}", f"#{upper}"})
+    # Base sembol varyasyonları da eklensin
+    terms.update({base_symbol, base_symbol.upper(), f"#{base_symbol}", f"#{base_symbol.upper()}"})
+    return terms
 
 def calculate_news_sentiment_for_symbol(symbol: str, headlines: list, config: object) -> Optional[float]:
     # ... (Kod aynı, değişiklik yok) ...
@@ -229,15 +264,17 @@ def calculate_news_sentiment_for_symbol(symbol: str, headlines: list, config: ob
     lookback_seconds = lookback_hours * 3600; search_terms = _get_search_terms(symbol, config)
     if not headlines: return None
     for h in headlines:
-        ts = h.get('published_timestamp'); title = h.get('title')
-        if ts is None or (current_time - ts > lookback_seconds) or not title: continue
-        title_lower = title.lower()
-        try:
-             if any(re.search(r'\b' + re.escape(term) + r'\b', title_lower) for term in search_terms):
-                 relevant_scores.append(analyze_sentiment_vader(title))
-        except Exception: # Regex hatası olursa
-             if any(term in title_lower for term in search_terms):
-                  relevant_scores.append(analyze_sentiment_vader(title))
+       ts = h.get('published_timestamp'); title = h.get('title')
+       if ts is None or (current_time - ts > lookback_seconds) or not title: continue
+       summary = h.get('summary') or ''
+       text = f"{title} {summary}".strip()
+       text_lower = text.lower()
+       try:
+           if any(re.search(r'\b' + re.escape(term) + r'\b', text_lower) for term in search_terms):
+              relevant_scores.append(analyze_sentiment_vader(text))
+       except Exception: # Regex hatası olursa
+           if any(term in text_lower for term in search_terms):
+               relevant_scores.append(analyze_sentiment_vader(text))
     if not relevant_scores: logger.info(f"'{symbol}' için son {lookback_hours}s ilgili haber yok."); return None
     avg_score = sum(relevant_scores) / len(relevant_scores)
     logger.info(f"'{symbol}' için {len(relevant_scores)} haberin ort. duygu skoru: {avg_score:.3f}")
@@ -282,6 +319,17 @@ def calculate_trends_score(symbol: str, trends_data: Optional[pd.DataFrame], con
     available_cols = trends_data.columns
     for kw in possible_keywords:
         if kw in available_cols: keyword_col = kw; break
+    # Fuzzy eşleşme (düşük riskli): en yakın sütunu seç
+    if not keyword_col:
+        best_col = None; best_score = 0.0
+        for col in available_cols:
+            for kw in possible_keywords:
+                score = SequenceMatcher(None, col.lower(), kw.lower()).ratio()
+                if score > best_score:
+                    best_score = score; best_col = col
+        if best_col and best_score >= 0.6:
+            keyword_col = best_col
+            logger.info(f"Google Trends sütun eşleşmesi (fuzzy): '{keyword_col}' (skor={best_score:.2f})")
     if not keyword_col: logger.warning(f"'{symbol}' ({possible_keywords}) Trends verisinde bulunamadı. Sütunlar: {list(available_cols)}"); return None
     try:
         if not isinstance(trends_data.index, pd.DatetimeIndex): trends_data.index = pd.to_datetime(trends_data.index)

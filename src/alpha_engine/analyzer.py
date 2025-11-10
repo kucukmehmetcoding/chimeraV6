@@ -51,7 +51,7 @@ def calculate_quality_grade(symbol: str, config: object, direction: str) -> str:
             from src.database.models import get_db_session, AlphaCache
             stale_components = []
             with get_db_session() as db_age:
-                keys = ['fng_index', 'rss_headlines', 'reddit_posts', 'google_trends']
+                keys = ['fng_index', 'rss_headlines', 'reddit_posts', 'google_trends_data']
                 now_utc = datetime.now(timezone.utc)
                 for k in keys:
                     rec = db_age.query(AlphaCache).filter(AlphaCache.key == k).first()
@@ -60,18 +60,20 @@ def calculate_quality_grade(symbol: str, config: object, direction: str) -> str:
                         if lu.tzinfo is None:
                             lu = lu.replace(tzinfo=timezone.utc)
                         age_min = (now_utc - lu).total_seconds() / 60.0
-                        if age_min > stale_threshold_min:
-                            stale_components.append((k, age_min))
+                        ratio = max(0.0, min(1.0, age_min / stale_threshold_min))
+                        if ratio > 1.0: ratio = 1.0
+                        if ratio > 0.0:
+                            stale_components.append((k, age_min, ratio))
                     else:
-                        # Kayıt yoksa da stale say
-                        stale_components.append((k, None))
+                        stale_components.append((k, None, 1.0))
             if stale_components:
-                # Her bayat bileşen için hafif ceza uygulayacağız; toplam ceza sınırlı
-                stale_penalty_per = 0.25
+                # Lineer ölçekli ceza: her bileşen için ratio * penalty_per
+                penalty_per = 0.25
                 max_total_penalty = 0.75
-                total_penalty = min(len(stale_components) * stale_penalty_per, max_total_penalty)
-                logger.warning(f"📉 Bayat sentiment verisi: {stale_components} -> Toplam ceza: {total_penalty:.2f}")
-                # Ceza, grade_score üzerine eklenecek; henüz grade_score tanımlanmadı, geçici değişkende tut
+                total_penalty = sum(ratio * penalty_per for (_, _, ratio) in stale_components)
+                if total_penalty > max_total_penalty:
+                    total_penalty = max_total_penalty
+                logger.warning(f"📉 Bayat sentiment verisi: {[(c, a) for (c,a,_) in stale_components]} -> Ölçekli ceza: {-total_penalty:.2f}")
                 stale_penalty_accumulator = -total_penalty
             else:
                 stale_penalty_accumulator = 0.0
@@ -134,7 +136,10 @@ def calculate_quality_grade(symbol: str, config: object, direction: str) -> str:
 
     # 3c. Reddit Duygu Skoru Katkısı
     reddit_score_contribution = 0
-    if reddit_sentiment is not None:
+    # Dinamik reddit ağırlığı: Reddit/veri yoksa ağırlığı sıfırla
+    reddit_available = reddit_sentiment is not None and sentiment_analyzer.analyzer is not None and sentiment_analyzer.reddit_client is not None
+    effective_reddit_weight = reddit_weight if reddit_available else 0.0
+    if reddit_sentiment is not None and effective_reddit_weight > 0:
         sentiment_threshold_pos = 0.10; sentiment_strong_pos = 0.4
         sentiment_threshold_neg = -0.10; sentiment_strong_neg = -0.4
         if direction == 'LONG':
@@ -147,12 +152,14 @@ def calculate_quality_grade(symbol: str, config: object, direction: str) -> str:
             elif reddit_sentiment > sentiment_threshold_pos: reddit_score_contribution = -0.75
             elif reddit_sentiment < sentiment_strong_neg: reddit_score_contribution = 1.0
             elif reddit_sentiment < sentiment_threshold_neg: reddit_score_contribution = 0.5
-        grade_score += reddit_score_contribution * reddit_weight
-        logger.debug(f"Reddit Duygusu: {reddit_sentiment:.3f}, Yön: {direction}, Katkı: {reddit_score_contribution * reddit_weight:.2f}")
+        grade_score += reddit_score_contribution * effective_reddit_weight
+        logger.debug(f"Reddit Duygusu: {reddit_sentiment:.3f}, Yön: {direction}, Katkı: {reddit_score_contribution * effective_reddit_weight:.2f} (effective_weight={effective_reddit_weight})")
     else:
-        logger.warning(f"'{symbol}' için Reddit duygu skoru bulunamadı (None).")
-        grade_score += no_info_penalty * reddit_weight * 0.5 # Yarım ceza
-        logger.debug(f"Reddit skoru yok, Ceza: {no_info_penalty * reddit_weight * 0.5:.2f}")
+        if effective_reddit_weight == 0.0:
+            logger.warning(f"'{symbol}' için Reddit duygu skoru veya Reddit client yok -> ağırlık 0.")
+        else:
+            grade_score += no_info_penalty * effective_reddit_weight * 0.5
+            logger.debug(f"Reddit skoru yok, Ceza: {no_info_penalty * effective_reddit_weight * 0.5:.2f}")
 
     # 3d. Google Trends Skoru Katkısı
     trends_contribution = 0
