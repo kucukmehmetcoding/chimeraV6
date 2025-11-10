@@ -288,6 +288,7 @@ QUALITY_MULTIPLIERS = {
 # İkincil eşik: Daha düşük fakat risk çarpanı düşürülmüş şekilde kabul edilir.
 MIN_RR_SECONDARY = float(os.getenv("MIN_RR_SECONDARY", 0.85))  # 0.85 - 0.99 arası kabul
 SECONDARY_RISK_MULTIPLIER = float(os.getenv("SECONDARY_RISK_MULTIPLIER", 0.55))  # Birincil riskin %55'i
+MIN_RR_SECONDARY_RELAXED = float(os.getenv("MIN_RR_SECONDARY_RELAXED", 0.80))
 
 # C ve D grade için mikro risk kullanımını global aç/kapat
 ENABLE_MICRO_RISK_LOW_GRADES = bool(int(os.getenv("ENABLE_MICRO_RISK_LOW_GRADES", 1)))
@@ -297,6 +298,7 @@ ENABLE_MICRO_RISK_LOW_GRADES = bool(int(os.getenv("ENABLE_MICRO_RISK_LOW_GRADES"
 NAN_TOLERANCE_ENABLED = bool(int(os.getenv("NAN_TOLERANCE_ENABLED", 1)))
 MAX_NAN_INDICATORS_ALLOWED = int(os.getenv("MAX_NAN_INDICATORS_ALLOWED", 2))  # Örn: 2 kolona kadar eksik tolerans
 NAN_PENALTY_PER_INDICATOR = float(os.getenv("NAN_PENALTY_PER_INDICATOR", 0.15))  # Kalite skorundan düşülecek
+MAX_NAN_INDICATORS_ALLOWED_RELAXED = int(os.getenv("MAX_NAN_INDICATORS_ALLOWED_RELAXED", 3))
 
 # --- Rejim Adaptif Eşikler ---
 # Rejime göre efektif RR ve hacim eşiklerini ayarla (ör: BREAKOUT modunda hacim gereksinimi yüksek)
@@ -320,10 +322,12 @@ ENABLE_TWO_STAGE_PIPELINE = bool(int(os.getenv("ENABLE_TWO_STAGE_PIPELINE", 1)))
 STAGE1_MIN_VOL_RATIO = float(os.getenv("STAGE1_MIN_VOL_RATIO", 0.95))  # 1.05 → 0.95 (hafifçe altına izin)
 STAGE1_MIN_MOMENTUM_SCORE = float(os.getenv("STAGE1_MIN_MOMENTUM_SCORE", 0.0))  # 0.4 → 0.0 (momentum bariyeri kaldırıldı)
 STAGE1_MAX_CANDIDATES = int(os.getenv("STAGE1_MAX_CANDIDATES", 400))  # 25 → 1000 (fiilen sınırsız ~ tüm futures)
+STAGE1_MIN_VOL_RATIO_RELAXED = float(os.getenv("STAGE1_MIN_VOL_RATIO_RELAXED", 0.92))  # Hafif gevşeme
+STAGE1_MAX_CANDIDATES_RELAXED = int(os.getenv("STAGE1_MAX_CANDIDATES_RELAXED", 500))
 
 # --- Breakout Micro-Relaxation Toggles (Safe defaults) ---
 BREAKOUT_ADX_DELTA_TOLERANCE = float(os.getenv("BREAKOUT_ADX_DELTA_TOLERANCE", 0.5))  # ADX >= prevADX-0.5 kabul
-BREAKOUT_ENABLE_MACD_RELAXED = bool(int(os.getenv("BREAKOUT_ENABLE_MACD_RELAXED", 0)))  # Kapalı başla
+BREAKOUT_ENABLE_MACD_RELAXED = bool(int(os.getenv("BREAKOUT_ENABLE_MACD_RELAXED", 1)))  # Hafif gevşeme: Açık başla
 BREAKOUT_MACD_RELAXED_MIN_INCREASING = int(os.getenv("BREAKOUT_MACD_RELAXED_MIN_INCREASING", 2))
 # RSI core/extended bantları (LONG)
 BREAKOUT_RSI_CORE_LOW = int(os.getenv("BREAKOUT_RSI_CORE_LOW", 52))
@@ -336,11 +340,21 @@ BREAKOUT_RSI_CORE_SHORT_HIGH = int(os.getenv("BREAKOUT_RSI_CORE_SHORT_HIGH", 50)
 BREAKOUT_RSI_EXT_SHORT_LOW = int(os.getenv("BREAKOUT_RSI_EXT_SHORT_LOW", 28))
 BREAKOUT_RSI_EXT_SHORT_HIGH = int(os.getenv("BREAKOUT_RSI_EXT_SHORT_HIGH", 52))
 BREAKOUT_REQUIRE_EXTRA_CONFIRM_OUTSIDE_CORE = bool(int(os.getenv("BREAKOUT_REQUIRE_EXTRA_CONFIRM_OUTSIDE_CORE", 1)))
+BREAKOUT_MIN_SQUEEZE_BARS = int(os.getenv("BREAKOUT_MIN_SQUEEZE_BARS", 5))
+BREAKOUT_MAX_SQUEEZE_BARS = int(os.getenv("BREAKOUT_MAX_SQUEEZE_BARS", 20))
+BREAKOUT_BBW_PERCENTILE_MAX = float(os.getenv("BREAKOUT_BBW_PERCENTILE_MAX", 15.0))
+BREAKOUT_VOLUME_RATIO_MIN_RELAXED = float(os.getenv("BREAKOUT_VOLUME_RATIO_MIN_RELAXED", 2.25))  # 2.5x -> 2.25x
+BREAKOUT_VOLUME_INCREASE_MIN_RELAXED = float(os.getenv("BREAKOUT_VOLUME_INCREASE_MIN_RELAXED", 27.0))  # 30% -> 27%
+BREAKOUT_BODY_STRENGTH_MIN_RELAXED = float(os.getenv("BREAKOUT_BODY_STRENGTH_MIN_RELAXED", 54.0))  # 60% -> 54%
+BREAKOUT_DISTANCE_MIN_RELAXED = float(os.getenv("BREAKOUT_DISTANCE_MIN_RELAXED", 0.27))  # 0.30% -> 0.27%
+ENABLE_BREAKOUT_RELAX_PHASE = bool(int(os.getenv("ENABLE_BREAKOUT_RELAX_PHASE", 1)))
 
 # Pullback VWAP toleransı (çok hafif gevşetme, ATR yüksekse genişletme kapalı)
 PULLBACK_VWAP_TOLERANCE_LONG = float(os.getenv("PULLBACK_VWAP_TOLERANCE_LONG", 0.0115))  # 1.15%
 PULLBACK_VWAP_TOLERANCE_SHORT = float(os.getenv("PULLBACK_VWAP_TOLERANCE_SHORT", 0.0115))  # 1.15%
 PULLBACK_VWAP_MAX_ATR_PERCENT_FOR_EXTENSION = float(os.getenv("PULLBACK_VWAP_MAX_ATR_PERCENT_FOR_EXTENSION", 4.0))
+PULLBACK_VWAP_TOLERANCE_RELAX_FACTOR = float(os.getenv("PULLBACK_VWAP_TOLERANCE_RELAX_FACTOR", 1.08))  # %8 gevşeme
+ENABLE_PULLBACK_RELAX_PHASE = bool(int(os.getenv("ENABLE_PULLBACK_RELAX_PHASE", 1)))
 
 # --- Probabilistic Position Sizing ---
 ENABLE_PROBABILISTIC_SIZING = bool(int(os.getenv("ENABLE_PROBABILISTIC_SIZING", 1)))
@@ -352,6 +366,8 @@ ENABLE_FREQUENCY_THROTTLE = bool(int(os.getenv("ENABLE_FREQUENCY_THROTTLE", 1)))
 THROTTLE_WINDOW_MINUTES = int(os.getenv("THROTTLE_WINDOW_MINUTES", 90))  # Son 90 dakikada...
 MAX_NEW_POSITIONS_PER_WINDOW = int(os.getenv("MAX_NEW_POSITIONS_PER_WINDOW", 4))  # ... en fazla 4 yeni pozisyon
 THROTTLE_GRADE_PRIORITY = ['A', 'B', 'C']  # D grade zaten düşük öncelik
+THROTTLE_WINDOW_MINUTES_RELAXED = int(os.getenv("THROTTLE_WINDOW_MINUTES_RELAXED", 85))
+MAX_NEW_POSITIONS_PER_WINDOW_RELAXED = int(os.getenv("MAX_NEW_POSITIONS_PER_WINDOW_RELAXED", 5))
 
 # D: Tamamen iptal (sadece çok kötü sinyaller)
 
@@ -474,6 +490,8 @@ SENTIMENT_GOOGLE_TRENDS_KEYWORDS = ["Bitcoin", "Ethereum", "crypto", "Solana", "
 SENTIMENT_TRENDS_UPDATE_INTERVAL_SECONDS = int(os.getenv("SENTIMENT_TRENDS_UPDATE_INTERVAL_SECONDS", 3600 * 4))
 
 # --- Bildirim Ayarları ---
+# --- Bildirim Ayarları ---
+# Ortam değişkeni ile açıkça kontrol edilebilir hale getirildi (.env.example'a eklendi)
 NOTIFY_ON_NO_SIGNAL = os.getenv("NOTIFY_ON_NO_SIGNAL", "True").lower() == 'true'
 
 # --- Trade Manager Ayarları ---
