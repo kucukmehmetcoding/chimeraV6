@@ -1054,12 +1054,38 @@ def close_position(position_id: int, exit_price: float, reason: str):
         executor = get_executor()
         if executor and position.status == 'ACTIVE':  # Sadece gerçek pozisyonları kapat
             try:
+                symbol_clean = position.symbol.replace('/', '')  # BTCUSDT formatına çevir
                 logger.info(f"🔴 {position.symbol} Binance'de kapatılıyor... (Reason: {reason})")
                 
-                # Market emri ile pozisyonu kapat
+                # 🆕 1.1: TP/SL emirlerini iptal et (eğer varsa)
+                if reason.startswith('TP'):
+                    # TP tetiklendi → SL emrini iptal et
+                    if position.sl_order_id:
+                        try:
+                            executor.client.futures_cancel_order(
+                                symbol=symbol_clean,
+                                orderId=position.sl_order_id
+                            )
+                            logger.info(f"   ✅ SL emri iptal edildi: {position.sl_order_id}")
+                        except Exception as cancel_err:
+                            logger.warning(f"   ⚠️ SL emri iptal edilemedi (zaten dolu olabilir): {cancel_err}")
+                
+                elif reason.startswith('SL'):
+                    # SL tetiklendi → TP emrini iptal et
+                    if position.tp_order_id:
+                        try:
+                            executor.client.futures_cancel_order(
+                                symbol=symbol_clean,
+                                orderId=position.tp_order_id
+                            )
+                            logger.info(f"   ✅ TP emri iptal edildi: {position.tp_order_id}")
+                        except Exception as cancel_err:
+                            logger.warning(f"   ⚠️ TP emri iptal edilemedi (zaten dolu olabilir): {cancel_err}")
+                
+                # 1.2: Market emri ile pozisyonu kapat
                 close_side = 'SELL' if position.direction == 'LONG' else 'BUY'
                 close_order = executor.client.futures_create_order(
-                    symbol=position.symbol.replace('/', ''),  # BTCUSDT formatına çevir
+                    symbol=symbol_clean,
                     side=close_side,
                     type='MARKET',
                     quantity=position.position_size_units,
