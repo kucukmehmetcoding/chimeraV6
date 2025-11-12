@@ -1171,7 +1171,31 @@ def place_real_order(signal_data):
             logger.error("❌ Executor client bulunamadı - Binance bağlantısı yok!")
             return None
 
-        # 0.1. Precision kontrolü - quantity ve fiyatları Binance kurallarına göre yuvarla
+        # 0.1. Kaldıraç ve Margin Mode ayarla (Config'den)
+        leverage = config.FUTURES_LEVERAGE  # 10x (config.py'dan)
+        margin_type = 'ISOLATED'  # Isolated mode (güvenlik)
+        
+        try:
+            # Kaldıraç ayarla
+            logger.info(f"🔧 {symbol} kaldıraç ayarlanıyor: {leverage}x ({margin_type})")
+            executor.set_leverage(symbol, leverage)
+            
+            # Margin mode ayarla (ISOLATED)
+            try:
+                executor.client.futures_change_margin_type(symbol=symbol, marginType=margin_type)
+                logger.info(f"   ✅ Margin mode: {margin_type}")
+            except Exception as margin_error:
+                # Eğer zaten ISOLATED ise hata verir, önemli değil
+                if 'No need to change margin type' in str(margin_error):
+                    logger.debug(f"   ℹ️ Margin mode zaten {margin_type}")
+                else:
+                    logger.warning(f"   ⚠️ Margin mode ayarlanamadı: {margin_error}")
+        except Exception as leverage_error:
+            logger.error(f"❌ Kaldıraç ayarlanamadı: {leverage_error}")
+            logger.error(f"   Pozisyon açılmayacak - güvenlik riski!")
+            return None
+
+        # 0.2. Precision kontrolü - quantity ve fiyatları Binance kurallarına göre yuvarla
         quantity = executor.round_quantity(symbol, quantity)
         tp_price = executor.round_price(symbol, tp_price)
         sl_price = executor.round_price(symbol, sl_price)
