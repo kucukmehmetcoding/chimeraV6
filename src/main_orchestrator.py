@@ -1463,6 +1463,23 @@ def main():
         telegram_notifier.initialize_bot(config)
         logger.info("   ✅ Telegram bot hazır\n")
         
+        # 🚨 v11.2: Binance Futures Executor Başlat (REAL TRADING için gerekli!)
+        if config.ENABLE_REAL_TRADING:
+            logger.info("🔥 Binance Futures Executor başlatılıyor (REAL TRADING MODE)...")
+            try:
+                from src.trade_manager.executor import initialize_executor
+                initialize_executor(config)
+                logger.info("   ✅ Binance Futures client hazır")
+                logger.info(f"   📊 API Key: {config.BINANCE_API_KEY[:8]}...")
+                logger.info(f"   🌐 Testnet: {config.BINANCE_TESTNET}")
+                logger.info("   ⚠️ GERÇEK PARA İLE İŞLEM AÇILACAK!\n")
+            except Exception as executor_error:
+                logger.critical(f"❌ Binance Executor başlatılamadı: {executor_error}")
+                logger.critical("   REAL TRADING iptal ediliyor - Simülasyon moduna geçiş yapılıyor")
+                config.ENABLE_REAL_TRADING = False
+        else:
+            logger.info("ℹ️  Simülasyon modu - Binance Executor başlatılmıyor\n")
+        
         # 🆕 v11.0: HTF-LTF sistem - eski v10.6 sistem kaldırıldı
         # if not initialize_v10_6_system():
         #     logger.critical("❌ v10.6 sistem başlatılamadı!")
