@@ -1,5 +1,6 @@
 # ChimeraBot Dockerfile - Coolify Deployment
 # Python 3.11 with TA-Lib support
+# v11.2.3 - Precision fix for Binance orders
 
 FROM python:3.11-slim
 
