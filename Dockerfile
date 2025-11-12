@@ -62,7 +62,7 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p /app/data /app/logs
 
-# Make entrypoint script executable (already copied with COPY . .)
+# Make entrypoint script executable
 RUN chmod +x /app/docker-entrypoint.sh
 
 # Run DB migrations (ensure schema is up to date)

@@ -73,8 +73,9 @@ new_limits_summary.py
 .env
 .env.example
 
-# Shell scripts
+# Shell scripts (EXCEPT docker-entrypoint.sh which is required!)
 *.sh
+!docker-entrypoint.sh
 
 # CSV reports
 *.csv
