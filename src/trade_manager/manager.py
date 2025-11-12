@@ -1134,7 +1134,10 @@ def close_position(position_id: int, exit_price: float, reason: str):
             signal_time=position.signal_time,
             close_time=datetime.now(),
             quality_grade=position.quality_grade,
-            planned_risk_percent=position.planned_risk_percent
+            planned_risk_percent=position.planned_risk_percent,
+            confluence_score=getattr(position, 'confluence_score', None),  # 🆕 v11.3
+            htf_score=getattr(position, 'htf_score', None),  # 🆕 v11.3
+            ltf_score=getattr(position, 'ltf_score', None)  # 🆕 v11.3
         )
         db.add(trade_history)
         

@@ -160,6 +160,11 @@ class OpenPosition(Base):
     hybrid_score = Column(Float, nullable=True)  # Confirmation score
     execution_type = Column(String(20), nullable=True)  # market, limit, partial
     
+    # 🆕 v11.3: Confluence Scoring System
+    confluence_score = Column(Float, nullable=True)  # Multi-timeframe quality score (0-10)
+    htf_score = Column(Float, nullable=True)  # HTF (1H) component score
+    ltf_score = Column(Float, nullable=True)  # LTF (15M) component score
+    
     # Yeni kolonlar
     entry_order_id = Column(String, nullable=True)  # Binance entry order ID
     oco_order_list_id = Column(String, nullable=True)  # Binance OCO list ID
@@ -199,6 +204,11 @@ class TradeHistory(Base):
     
     pnl_usd = Column(Float)
     pnl_percent = Column(Float)
+    
+    # 🆕 v11.3: Confluence Scoring System (history tracking)
+    confluence_score = Column(Float, nullable=True)  # Multi-timeframe quality score at entry
+    htf_score = Column(Float, nullable=True)  # HTF component score
+    ltf_score = Column(Float, nullable=True)  # LTF component score
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

@@ -85,6 +85,9 @@ try:
     from src.technical_analyzer.htf_ltf_strategy import analyze_htf_ltf_signal
     from src.technical_analyzer.indicators import add_htf_indicators, add_ltf_indicators
     
+    # 🆕 v11.3: Confluence Scoring System
+    from src.technical_analyzer.confluence_scorer import get_confluence_scorer
+    
     # 🆕 v10.8: Multi-Timeframe Analyzer (DEPRECATED - using HTF-LTF now)
     # from src.technical_analyzer.multi_timeframe_analyzer import (
     #     check_multi_timeframe_entry,
@@ -1108,6 +1111,69 @@ def execute_multi_timeframe_position(symbol: str, signal: dict) -> bool:
         logger.info(f"Entry: ${entry_price:.2f}")
         logger.info(f"Confidence: {confidence:.2f}")
         
+        # 🆕 v11.3: CONFLUENCE SCORE CALCULATION
+        logger.info(f"📊 Calculating confluence score...")
+        confluence_data = None
+        try:
+            # Get confluence scorer instance
+            confluence_scorer = get_confluence_scorer(config)
+            
+            # Fetch 1H and 15M dataframes with indicators
+            from src.data_fetcher.binance_fetcher import get_binance_klines
+            from src.technical_analyzer.indicators import calculate_indicators
+            
+            df_1h = get_binance_klines(symbol, '1h', limit=100)
+            df_15m = get_binance_klines(symbol, '15m', limit=100)
+            
+            if df_1h is not None and not df_1h.empty:
+                df_1h = calculate_indicators(df_1h)
+            
+            if df_15m is not None and not df_15m.empty:
+                df_15m = calculate_indicators(df_15m)
+            
+            # Calculate HTF (1H) score
+            htf_score_data = confluence_scorer.calculate_htf_score(
+                df_1h=df_1h,
+                signal_direction=direction
+            )
+            
+            # Calculate LTF (15M) score
+            ltf_score_data = confluence_scorer.calculate_ltf_score(
+                df_15m=df_15m,
+                signal_direction=direction
+            )
+            
+            # Get quality grade from signal (default to 'B' if not present)
+            quality_grade = signal.get('quality_grade', 'B')
+            
+            # Calculate final confluence score
+            confluence_data = confluence_scorer.calculate_confluence_score(
+                htf_score_data=htf_score_data,
+                ltf_score_data=ltf_score_data,
+                quality_grade=quality_grade
+            )
+            
+            logger.info(f"   ✅ Confluence Score: {confluence_data['total_score']}/10")
+            logger.info(f"      HTF (1H): {confluence_data['htf_score']}")
+            logger.info(f"      LTF (15M): {confluence_data['ltf_score']}")
+            logger.info(f"      Sentiment: {confluence_data['sentiment_bonus']}")
+            logger.info(f"      Recommendation: {confluence_data['recommendation']}")
+            
+            # Check threshold
+            if not confluence_data['passed_threshold']:
+                logger.warning(
+                    f"❌ SIGNAL REJECTED: Confluence score {confluence_data['total_score']} "
+                    f"< minimum {confluence_data['min_threshold']}"
+                )
+                return False
+            
+            logger.info(f"   ✅ Threshold PASSED ({confluence_data['total_score']} >= {confluence_data['min_threshold']})")
+            
+        except Exception as conf_error:
+            logger.error(f"⚠️ Confluence score calculation failed: {conf_error}", exc_info=True)
+            logger.warning(f"⚠️ Continuing without confluence filtering...")
+            confluence_data = None
+        
         # 1. TP/SL hesapla
         sl_price, tp_price = calculate_hybrid_sl_tp(symbol, direction, entry_price, confidence)
         
@@ -1164,7 +1230,8 @@ def execute_multi_timeframe_position(symbol: str, signal: dict) -> bool:
                 'fear_greed_index': signal.get('fear_greed_index'),
                 'news_sentiment': signal.get('news_sentiment'),
                 'reddit_sentiment': signal.get('reddit_sentiment')
-            }
+            },
+            confluence_data=confluence_data  # 🆕 v11.3: Pass confluence data
         )
         
         if position_saved:
@@ -1172,7 +1239,7 @@ def execute_multi_timeframe_position(symbol: str, signal: dict) -> bool:
             
             # 5. Telegram notification
             try:
-                send_multi_timeframe_signal_alert(symbol, signal, sl_price, tp_price, position_size)
+                send_multi_timeframe_signal_alert(symbol, signal, sl_price, tp_price, position_size, confluence_data)
             except Exception as tg_error:
                 logger.warning(f"⚠️ Telegram notification failed: {tg_error}")
             
@@ -1186,8 +1253,8 @@ def execute_multi_timeframe_position(symbol: str, signal: dict) -> bool:
         return False
 
 
-def send_multi_timeframe_signal_alert(symbol: str, signal: dict, sl_price: float, tp_price: float, position_size: float):
-    """Telegram bildirimi gönder"""
+def send_multi_timeframe_signal_alert(symbol: str, signal: dict, sl_price: float, tp_price: float, position_size: float, confluence_data: dict = None):
+    """Telegram bildirimi gönder - v11.3 Confluence score eklendi"""
     try:
         direction = signal['signal']
         entry_price = signal['entry_price']
@@ -1195,6 +1262,23 @@ def send_multi_timeframe_signal_alert(symbol: str, signal: dict, sl_price: float
         
         tf_15m = signal['timeframes']['15m']
         tf_30m = signal['timeframes']['30m']
+        
+        # Confluence score formatı
+        conf_msg = ""
+        if confluence_data:
+            total = confluence_data.get('total_score', 0)
+            htf = confluence_data.get('htf_score', 0)
+            ltf = confluence_data.get('ltf_score', 0)
+            sentiment = confluence_data.get('sentiment_bonus', 0)
+            recommendation = confluence_data.get('recommendation', 'N/A')
+            
+            conf_msg = f"""
+📊 **Confluence Score:** {total}/10 ⭐
+├─ HTF (1H): {htf}/6
+├─ LTF (15M): {ltf}/5
+├─ Sentiment: +{sentiment}
+└─ Grade: {recommendation}
+"""
         
         message = f"""
 🚀 **YENİ POZİSYON AÇILDI**
@@ -1208,7 +1292,7 @@ def send_multi_timeframe_signal_alert(symbol: str, signal: dict, sl_price: float
 ├─ 15m EMA20: ${tf_15m['ema20']:.2f}
 ├─ 30m EMA5: ${tf_30m['ema5']:.2f}
 └─ 30m EMA20: ${tf_30m['ema20']:.2f}
-
+{conf_msg}
 🎯 **TP:** ${tp_price:,.4f} (+$4.00)
 🛑 **SL:** ${sl_price:,.4f} (-$1.00)
 
@@ -1271,9 +1355,9 @@ def get_portfolio_value() -> float:
 def save_hybrid_position(symbol: str, direction: str, entry_price: float,
                         sl_price: float, tp_price: float, position_size: float,
                         score: float, execution_type: str, execution_result: dict,
-                        sentiment_data: dict) -> int:
+                        sentiment_data: dict, confluence_data: dict = None) -> int:
     """
-    Pozisyonu DB'ye kaydet - v10.7.1 SABİT MARGIN
+    Pozisyonu DB'ye kaydet - v10.7.1 SABİT MARGIN + v11.3 CONFLUENCE SCORE
     
     Config'den sabit değerler:
     - FIXED_MARGIN_USD: 10 USD
@@ -1295,6 +1379,16 @@ def save_hybrid_position(symbol: str, direction: str, entry_price: float,
             leverage = config.FUTURES_LEVERAGE
             amount = position_size
             
+            # 🆕 v11.3: Extract confluence scores
+            confluence_score = None
+            htf_score = None
+            ltf_score = None
+            
+            if confluence_data:
+                confluence_score = confluence_data.get('total_score')
+                htf_score = confluence_data.get('htf_score')
+                ltf_score = confluence_data.get('ltf_score')
+            
             new_position = OpenPosition(
                 symbol=symbol,
                 strategy='v10.7.1_fixed_margin',
@@ -1315,7 +1409,10 @@ def save_hybrid_position(symbol: str, direction: str, entry_price: float,
                 reddit_sentiment_at_signal=sentiment_data.get('reddit_sentiment'),
                 status='OPEN',
                 initial_sl=sl_price,
-                order_status='FILLED'
+                order_status='FILLED',
+                confluence_score=confluence_score,  # 🆕 v11.3
+                htf_score=htf_score,  # 🆕 v11.3
+                ltf_score=ltf_score  # 🆕 v11.3
             )
             
             db.add(new_position)
@@ -1325,6 +1422,8 @@ def save_hybrid_position(symbol: str, direction: str, entry_price: float,
             logger.info(f"   ✅ Position saved to DB: ID={position_id}, {symbol} {db_direction} @ ${entry_price:.4f}")
             logger.info(f"      💰 Margin: ${MARGIN_USD} | Leverage: {leverage}x | Amount: {amount:.4f}")
             logger.info(f"      🎯 TP: ${tp_price:.4f} (+$4) | SL: ${sl_price:.4f} (-$1)")
+            if confluence_score:
+                logger.info(f"      📊 Confluence: {confluence_score}/10 (HTF: {htf_score}, LTF: {ltf_score})")
             
             return position_id
         except Exception as e:

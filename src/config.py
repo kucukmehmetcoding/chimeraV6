@@ -185,6 +185,11 @@ KELLY_MAX_FRACTION = float(os.getenv("KELLY_MAX_FRACTION", 0.15))  # Kelly yüzd
 MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 0.95))  # Geçici minimal gevşetme: 1.5 → 0.95
 MAX_POSITIONS_PER_SYMBOL = int(os.getenv("MAX_POSITIONS_PER_SYMBOL", 1))
 
+# 🆕 v11.3: CONFLUENCE SCORING SYSTEM
+# Multi-timeframe kalite skoru: HTF (1H) + LTF (15M) + Sentiment
+# Max score: ~8.6/10 → Minimum 7.0 gerekli (win rate optimization)
+MIN_CONFLUENCE_SCORE = float(os.getenv("MIN_CONFLUENCE_SCORE", 7.0))  # Minimum confluence threshold
+
 # 🔄 BREAKOUT L1 scalp fallback toggle
 ENABLE_BREAKOUT_SCALP_FALLBACK = os.getenv("ENABLE_BREAKOUT_SCALP_FALLBACK", "True").lower() == "true"
 # Semi / Extended squeeze ek sıkılaştırma configleri
