@@ -308,7 +308,7 @@ class BinanceFuturesExecutor:
     
     def round_price(self, symbol: str, price: float) -> float:
         """
-        Fiyatı sembol kurallarına göre yuvarlar.
+        Fiyatı sembol kurallarına göre yuvarlar (tick_size bazlı).
         
         Args:
             symbol: İşlem çifti
@@ -324,12 +324,14 @@ class BinanceFuturesExecutor:
                 logger.warning(f"⚠️ {symbol} için sembol bilgisi yok, fiyat yuvarlanamadı")
                 return price
             
-            price_precision = symbol_info.get('price_precision', 2)
+            tick_size = Decimal(str(symbol_info['tick_size']))
+            price_decimal = Decimal(str(price))
             
-            # Precision'a göre yuvarla
-            rounded = round(price, price_precision)
+            # Tick size'a göre yuvarla (quantity ile aynı mantık)
+            rounded = (price_decimal // tick_size) * tick_size
             
-            return rounded
+            # Float'a çevir
+            return float(rounded.quantize(tick_size, rounding=ROUND_DOWN))
             
         except Exception as e:
             logger.error(f"❌ Fiyat yuvarlama hatası: {e}", exc_info=True)
