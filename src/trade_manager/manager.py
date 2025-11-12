@@ -1125,77 +1125,99 @@ def close_position(position_id: int, exit_price: float, reason: str):
 
 def place_real_order(signal_data):
     """
-    Binance'de gerçek emir aç (OCO emri: TP ve SL birlikte)
+    Binance Futures'da gerçek emir aç
+    
+    Args:
+        signal_data: {
+            'symbol': 'BTCUSDT',
+            'direction': 'LONG' or 'SHORT',
+            'quantity': 0.001,  # position size (coin amount)
+            'entry_price': 50000.0,
+            'tp_price': 51000.0,
+            'sl_price': 49500.0
+        }
+    
+    Returns:
+        {
+            'entry_order_id': '...',
+            'tp_order_id': '...',
+            'sl_order_id': '...'
+        } or None on failure
     """
     if not ENABLE_REAL_TRADING:
         logger.warning("ENABLE_REAL_TRADING=False - Sadece simülasyon modu")
         return None
     
     try:
-        symbol = signal_data['symbol']
-        side = 'BUY' if signal_data['direction'] == 'LONG' else 'SELL'
-        quantity = signal_data['quantity']  # calculate_risk_and_size()'dan gelen
+        symbol = signal_data['symbol'].replace('/', '')  # BTCUSDT formatına çevir
+        direction = signal_data['direction'].upper()
+        quantity = signal_data['quantity']
         entry_price = signal_data['entry_price']
         tp_price = signal_data['tp_price']
         sl_price = signal_data['sl_price']
         
+        # Direction -> Binance side mapping
+        side = 'BUY' if direction == 'LONG' else 'SELL'
+        close_side = 'SELL' if direction == 'LONG' else 'BUY'
+        
+        logger.info(f"📊 Binance Emir Detayları:")
+        logger.info(f"   Symbol: {symbol} | Direction: {direction} ({side})")
+        logger.info(f"   Quantity: {quantity} | Entry: ${entry_price}")
+        logger.info(f"   TP: ${tp_price} | SL: ${sl_price}")
+        
         # 0. Executor kontrol
         executor = get_executor()
         if not executor or not getattr(executor, 'client', None):
-            logger.error("Executor client bulunamadı, gerçek emir açılamıyor")
+            logger.error("❌ Executor client bulunamadı - Binance bağlantısı yok!")
             return None
 
-        # 1. Ana pozisyon emri (Limit)
+        # 1. Market emri ile pozisyon aç (entry_price yerine MARKET kullan, Futures'ta daha hızlı)
+        # 1. Market emri ile pozisyon aç (entry_price yerine MARKET kullan, Futures'ta daha hızlı)
         entry_order = executor.client.futures_create_order(
-            symbol=symbol.replace('/', ''),
+            symbol=symbol,
             side=side,
-            type='LIMIT',
-            quantity=quantity,
-            price=str(entry_price),
-            timeInForce='GTC'
+            type='MARKET',
+            quantity=quantity
         )
         
-        logger.info(f"✅ Giriş emri yerleştirildi: {entry_order['orderId']}")
+        logger.info(f"✅ Entry emri FILLED: OrderID={entry_order['orderId']}")
         
-        # 2. OCO emri (Take Profit + Stop Loss)
-        # LONG için: TP üstte LIMIT SELL, SL altta STOP_LOSS_LIMIT SELL
-        # SHORT için: TP altta LIMIT BUY, SL üstte STOP_LOSS_LIMIT BUY
-        
-        # Futures'ta OCO için iki ayrı emir ile ilerliyoruz: TP Limit + SL Stop-Market
-        tp_side = 'SELL' if side == 'BUY' else 'BUY'
-        # TP (Limit, reduceOnly)
+        # 2. Take Profit emri (Limit, reduceOnly)
         tp_order = executor.client.futures_create_order(
-            symbol=symbol.replace('/', ''),
-            side=tp_side,
+            symbol=symbol,
+            side=close_side,
             type='LIMIT',
             quantity=quantity,
             price=str(tp_price),
             timeInForce='GTC',
-            reduceOnly=True
+            reduceOnly='true'
         )
-        # SL (Stop-Market, reduceOnly)
+        
+        logger.info(f"✅ TP emri yerleştirildi: OrderID={tp_order['orderId']} @ ${tp_price}")
+        
+        # 3. Stop Loss emri (STOP_MARKET, reduceOnly)
+        # 3. Stop Loss emri (STOP_MARKET, reduceOnly)
         sl_order = executor.client.futures_create_order(
-            symbol=symbol.replace('/', ''),
-            side=tp_side,
+            symbol=symbol,
+            side=close_side,
             type='STOP_MARKET',
             stopPrice=str(sl_price),
             quantity=quantity,
-            reduceOnly=True
+            reduceOnly='true'
         )
 
-        logger.info(f"✅ TP/SL emirleri yerleştirildi: TP={tp_order.get('orderId')}, SL={sl_order.get('orderId')}")
+        logger.info(f"✅ SL emri yerleştirildi: OrderID={sl_order['orderId']} @ ${sl_price}")
+        logger.info(f"🎯 Pozisyon AÇILDI: {symbol} {direction} x{quantity}")
         
         return {
             'entry_order_id': entry_order['orderId'],
             'tp_order_id': tp_order['orderId'],
-            'sl_order_id': sl_order['orderId']
+            'sl_order_id': sl_order['orderId'],
+            'entry_filled_price': entry_order.get('avgPrice', entry_price)
         }
         
-    except BinanceAPIException as e:
-        logger.error(f"❌ Binance emir hatası: {e}", exc_info=True)
-        return None
     except Exception as e:
-        logger.error(f"❌ Beklenmeyen hata: {e}", exc_info=True)
+        logger.error(f"❌ Binance emir hatası ({signal_data.get('symbol')}): {e}", exc_info=True)
         return None
 
 

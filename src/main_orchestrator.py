@@ -92,7 +92,7 @@ try:
     # )
     
     # Trade manager thread fonksiyonunu import et
-    from src.trade_manager.manager import continuously_check_positions
+    from src.trade_manager.manager import continuously_check_positions, place_real_order
     
 except ImportError as e:
     logger.critical(f"❌ Gerekli modül import edilemedi: {e}", exc_info=True)
@@ -1127,7 +1127,29 @@ def execute_multi_timeframe_position(symbol: str, signal: dict) -> bool:
             logger.warning(f"⚠️ Cannot open position (risk limits): {symbol}")
             return False
         
-        # 4. Pozisyon kaydet
+        # 🚨 4. GERÇEK BİNANCE EMRİNİ AÇ (ENABLE_REAL_TRADING=true ise)
+        order_result = None
+        if config.ENABLE_REAL_TRADING:
+            logger.info(f"🔥 GERÇEK TRADING AKTİF - Binance'de emir açılıyor: {symbol}")
+            order_result = place_real_order({
+                'symbol': symbol,
+                'direction': direction,
+                'quantity': position_size,
+                'entry_price': entry_price,
+                'tp_price': tp_price,
+                'sl_price': sl_price
+            })
+            
+            if not order_result:
+                logger.error(f"❌ Binance emir açılamadı - Pozisyon kaydedilmeyecek: {symbol}")
+                return False
+            
+            logger.info(f"✅ Binance emirleri açıldı: Entry={order_result.get('entry_order_id')}, "
+                       f"TP={order_result.get('tp_order_id')}, SL={order_result.get('sl_order_id')}")
+        else:
+            logger.info(f"ℹ️  Simülasyon modu - Sadece DB'ye kaydedilecek: {symbol}")
+        
+        # 5. Pozisyon kaydet (DB)
         position_saved = save_hybrid_position(
             symbol=symbol,
             direction=direction,
