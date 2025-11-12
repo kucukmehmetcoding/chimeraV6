@@ -1189,29 +1189,67 @@ def place_real_order(signal_data):
         logger.info(f"✅ Entry emri FILLED: OrderID={entry_order['orderId']}")
         
         # 2. Take Profit emri (Limit, reduceOnly)
-        tp_order = executor.client.futures_create_order(
-            symbol=symbol,
-            side=close_side,
-            type='LIMIT',
-            quantity=quantity,
-            price=tp_price,  # Artık rounded, str() gereksiz
-            timeInForce='GTC',
-            reduceOnly='true'
-        )
-        
-        logger.info(f"✅ TP emri yerleştirildi: OrderID={tp_order['orderId']} @ ${tp_price}")
+        try:
+            tp_order = executor.client.futures_create_order(
+                symbol=symbol,
+                side=close_side,
+                type='LIMIT',
+                quantity=quantity,
+                price=tp_price,  # Artık rounded, str() gereksiz
+                timeInForce='GTC',
+                reduceOnly='true'
+            )
+            logger.info(f"✅ TP emri yerleştirildi: OrderID={tp_order['orderId']} @ ${tp_price}")
+        except Exception as tp_error:
+            logger.error(f"❌ TP emri başarısız: {tp_error}")
+            logger.warning(f"🔄 Entry pozisyonu kapatılıyor (TP hatası nedeniyle)...")
+            try:
+                # Entry'yi geri al (ters işlem yap)
+                close_order = executor.client.futures_create_order(
+                    symbol=symbol,
+                    side=close_side,
+                    type='MARKET',
+                    quantity=quantity
+                )
+                logger.info(f"✅ Pozisyon kapatıldı (emergency close): {close_order['orderId']}")
+            except Exception as close_error:
+                logger.critical(f"⚠️⚠️⚠️ POZİSYON AÇIK KALDI - MANUEL KAPATIN! {symbol} {direction} x{quantity}")
+                logger.critical(f"Close hatası: {close_error}")
+            return None
         
         # 3. Stop Loss emri (STOP_MARKET, reduceOnly)
-        sl_order = executor.client.futures_create_order(
-            symbol=symbol,
-            side=close_side,
-            type='STOP_MARKET',
-            stopPrice=sl_price,  # Artık rounded, str() gereksiz
-            quantity=quantity,
-            reduceOnly='true'
-        )
-
-        logger.info(f"✅ SL emri yerleştirildi: OrderID={sl_order['orderId']} @ ${sl_price}")
+        try:
+            sl_order = executor.client.futures_create_order(
+                symbol=symbol,
+                side=close_side,
+                type='STOP_MARKET',
+                stopPrice=sl_price,  # Artık rounded, str() gereksiz
+                quantity=quantity,
+                reduceOnly='true'
+            )
+            logger.info(f"✅ SL emri yerleştirildi: OrderID={sl_order['orderId']} @ ${sl_price}")
+        except Exception as sl_error:
+            logger.error(f"❌ SL emri başarısız: {sl_error}")
+            logger.warning(f"🔄 Pozisyon kapatılıyor (SL hatası nedeniyle) ve TP emri iptal ediliyor...")
+            try:
+                # TP emrini iptal et
+                executor.client.futures_cancel_order(symbol=symbol, orderId=tp_order['orderId'])
+                logger.info(f"✅ TP emri iptal edildi: {tp_order['orderId']}")
+                
+                # Entry'yi geri al (ters işlem yap)
+                close_order = executor.client.futures_create_order(
+                    symbol=symbol,
+                    side=close_side,
+                    type='MARKET',
+                    quantity=quantity
+                )
+                logger.info(f"✅ Pozisyon kapatıldı (emergency close): {close_order['orderId']}")
+            except Exception as close_error:
+                logger.critical(f"⚠️⚠️⚠️ POZİSYON AÇIK KALDI - MANUEL KAPATIN! {symbol} {direction} x{quantity}")
+                logger.critical(f"TP var ama SL yok! TP OrderID: {tp_order['orderId']}")
+                logger.critical(f"Close hatası: {close_error}")
+            return None
+        
         logger.info(f"🎯 Pozisyon AÇILDI: {symbol} {direction} x{quantity}")
         
         return {
