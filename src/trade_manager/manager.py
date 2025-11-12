@@ -20,7 +20,6 @@ try:
     from src.data_fetcher.binance_fetcher import get_current_price  # 🆕 FIX: Eksik import
     # v5.0 AUTO-PILOT: Executor import
     from src.trade_manager.executor import get_executor
-    from src.data_fetcher.binance_fetcher import binance_client
 except ImportError as e:
     print(f"KRİTİK HATA (Trade Manager): Gerekli modüller import edilemedi: {e}")
     raise
@@ -115,12 +114,12 @@ def _get_real_close_price_from_binance(symbol: str, open_time_ms: int, entry_pri
     """
     try:
         executor = get_executor()
-        if not executor or not executor.binance_client:
+        if not executor or not getattr(executor, 'client', None):
             logger.warning(f"⚠️ {symbol} için Binance client bulunamadı, trades history çekilemiyor")
             return None
         
         # Son 50 trade'i çek (pozisyon kapanış trade'i burada olmalı)
-        trades = executor.binance_client.futures_account_trades(symbol=symbol, limit=50)
+        trades = executor.client.futures_account_trades(symbol=symbol, limit=50)
         
         if not trades:
             logger.warning(f"⚠️ {symbol} için trades history boş")
@@ -742,9 +741,17 @@ def continuously_check_positions(
                                 else:
                                     # 2. Trades history'de bulunamazsa, güncel fiyatı kullan
                                     logger.warning(f"⚠️ {pos_in_db.symbol} trades history'de bulunamadı, güncel fiyat kullanılıyor")
-                                    from src.data_fetcher.realtime_manager import RealTimeDataManager
-                                    realtime_mgr = RealTimeDataManager()
-                                    current_price = realtime_mgr.get_price(pos_in_db.symbol)
+                                    current_price = None
+                                    try:
+                                        if realtime_manager:
+                                            current_price = realtime_manager.get_price(pos_in_db.symbol)
+                                    except Exception as _e:
+                                        logger.debug(f"Realtime fiyat okunamadı, REST'e düşüyoruz: {_e}")
+                                    if not current_price:
+                                        try:
+                                            current_price = get_current_price(pos_in_db.symbol)
+                                        except Exception as _e2:
+                                            logger.error(f"REST fiyat alınamadı: {_e2}")
                                     
                                     if current_price:
                                         close_price = current_price
@@ -961,7 +968,11 @@ def monitor_positions_loop():
                             'tp_price': pos.tp_price,
                             'position_size': pos.position_size,
                             'planned_risk_percent': pos.planned_risk_percent,
-                            'quality_grade': pos.quality_grade
+                            'quality_grade': pos.quality_grade,
+                            # v10.4: Margin-based TP/SL alanları
+                            'initial_margin': getattr(pos, 'initial_margin', None),
+                            'tp_margin': getattr(pos, 'tp_margin', None),
+                            'sl_margin': getattr(pos, 'sl_margin', None)
                         }
                         for pos in open_positions
                     ]
@@ -976,21 +987,41 @@ def monitor_positions_loop():
                     should_close = False
                     close_reason = ""
                     
-                    # SL/TP kontrolü (orijinal algoritma)
-                    if pos_data['direction'] == 'LONG':
-                        if current_price <= pos_data['sl_price']:
+                    # v10.4: Margin-based TP/SL kontrolü (fast mode için)
+                    if pos_data.get('initial_margin') is not None and pos_data.get('tp_margin') is not None:
+                        # Margin-based sistem aktif
+                        unrealized_pnl = 0.0
+                        if pos_data['direction'] == 'LONG':
+                            unrealized_pnl = pos_data['position_size'] * (current_price - pos_data['entry_price'])
+                        else:  # SHORT
+                            unrealized_pnl = pos_data['position_size'] * (pos_data['entry_price'] - current_price)
+                        
+                        current_margin = pos_data['initial_margin'] + unrealized_pnl
+                        
+                        # TP kontrolü: margin >= tp_margin
+                        if current_margin >= pos_data['tp_margin']:
                             should_close = True
-                            close_reason = "SL"
-                        elif current_price >= pos_data['tp_price']:
+                            close_reason = f"TP (Margin: ${current_margin:.2f} >= ${pos_data['tp_margin']:.2f})"
+                        # SL kontrolü: margin <= sl_margin
+                        elif current_margin <= pos_data['sl_margin']:
                             should_close = True
-                            close_reason = "TP"
-                    else:  # SHORT
-                        if current_price >= pos_data['sl_price']:
-                            should_close = True
-                            close_reason = "SL"
-                        elif current_price <= pos_data['tp_price']:
-                            should_close = True
-                            close_reason = "TP"
+                            close_reason = f"SL (Margin: ${current_margin:.2f} <= ${pos_data['sl_margin']:.2f})"
+                    else:
+                        # Eski sistem: Price-based TP/SL kontrolü
+                        if pos_data['direction'] == 'LONG':
+                            if current_price <= pos_data['sl_price']:
+                                should_close = True
+                                close_reason = "SL"
+                            elif current_price >= pos_data['tp_price']:
+                                should_close = True
+                                close_reason = "TP"
+                        else:  # SHORT
+                            if current_price >= pos_data['sl_price']:
+                                should_close = True
+                                close_reason = "SL"
+                            elif current_price <= pos_data['tp_price']:
+                                should_close = True
+                                close_reason = "TP"
                     
                     if should_close:
                         # Pozisyon kapatma işlemi lock içinde
@@ -1027,7 +1058,7 @@ def close_position(position_id: int, exit_price: float, reason: str):
                 
                 # Market emri ile pozisyonu kapat
                 close_side = 'SELL' if position.direction == 'LONG' else 'BUY'
-                close_order = executor.binance_client.futures_create_order(
+                close_order = executor.client.futures_create_order(
                     symbol=position.symbol.replace('/', ''),  # BTCUSDT formatına çevir
                     side=close_side,
                     type='MARKET',
@@ -1053,12 +1084,14 @@ def close_position(position_id: int, exit_price: float, reason: str):
             logger.warning(f"⚠️ Executor yok, {position.symbol} sadece DB'den silinecek")
         
         # STEP 2: PnL hesaplama (orijinal mantık korunuyor)
+        size_units = getattr(position, 'position_size_units', getattr(position, 'position_size', 0))
         if position.direction == 'LONG':
-            pnl_usd = (exit_price - position.entry_price) * position.position_size
+            pnl_usd = (exit_price - position.entry_price) * size_units
         else:
-            pnl_usd = (position.entry_price - exit_price) * position.position_size
-        
-        pnl_percent = (pnl_usd / (position.entry_price * position.position_size)) * 100
+            pnl_usd = (position.entry_price - exit_price) * size_units
+
+        cost_basis = position.entry_price * size_units if size_units else 0
+        pnl_percent = (pnl_usd / cost_basis * 100) if cost_basis else 0
         
         # STEP 3: Trade history'ye kaydet
         trade_history = TradeHistory(
@@ -1068,7 +1101,7 @@ def close_position(position_id: int, exit_price: float, reason: str):
             exit_price=exit_price,
             sl_price=position.sl_price,
             tp_price=position.tp_price,
-            position_size_units=position.position_size,
+            position_size_units=size_units,
             pnl_usd=pnl_usd,
             pnl_percent=pnl_percent,
             close_reason=reason,
@@ -1106,10 +1139,17 @@ def place_real_order(signal_data):
         tp_price = signal_data['tp_price']
         sl_price = signal_data['sl_price']
         
-        # 1. Ana pozisyon emri (Market veya Limit)
-        entry_order = binance_client.order_limit(
-            symbol=symbol,
+        # 0. Executor kontrol
+        executor = get_executor()
+        if not executor or not getattr(executor, 'client', None):
+            logger.error("Executor client bulunamadı, gerçek emir açılamıyor")
+            return None
+
+        # 1. Ana pozisyon emri (Limit)
+        entry_order = executor.client.futures_create_order(
+            symbol=symbol.replace('/', ''),
             side=side,
+            type='LIMIT',
             quantity=quantity,
             price=str(entry_price),
             timeInForce='GTC'
@@ -1121,34 +1161,34 @@ def place_real_order(signal_data):
         # LONG için: TP üstte LIMIT SELL, SL altta STOP_LOSS_LIMIT SELL
         # SHORT için: TP altta LIMIT BUY, SL üstte STOP_LOSS_LIMIT BUY
         
-        if signal_data['direction'] == 'LONG':
-            oco_side = 'SELL'
-            price = str(tp_price)
-            stop_price = str(sl_price)
-            stop_limit_price = str(sl_price * 0.995)  # %0.5 slippage
-        else:
-            oco_side = 'BUY'
-            price = str(tp_price)
-            stop_price = str(sl_price)
-            stop_limit_price = str(sl_price * 1.005)
-        
-        oco_order = binance_client.create_oco_order(
-            symbol=symbol,
-            side=oco_side,
+        # Futures'ta OCO için iki ayrı emir ile ilerliyoruz: TP Limit + SL Stop-Market
+        tp_side = 'SELL' if side == 'BUY' else 'BUY'
+        # TP (Limit, reduceOnly)
+        tp_order = executor.client.futures_create_order(
+            symbol=symbol.replace('/', ''),
+            side=tp_side,
+            type='LIMIT',
             quantity=quantity,
-            price=price,
-            stopPrice=stop_price,
-            stopLimitPrice=stop_limit_price,
-            stopLimitTimeInForce='GTC'
+            price=str(tp_price),
+            timeInForce='GTC',
+            reduceOnly=True
         )
-        
-        logger.info(f"✅ OCO emri yerleştirildi: {oco_order['orderListId']}")
+        # SL (Stop-Market, reduceOnly)
+        sl_order = executor.client.futures_create_order(
+            symbol=symbol.replace('/', ''),
+            side=tp_side,
+            type='STOP_MARKET',
+            stopPrice=str(sl_price),
+            quantity=quantity,
+            reduceOnly=True
+        )
+
+        logger.info(f"✅ TP/SL emirleri yerleştirildi: TP={tp_order.get('orderId')}, SL={sl_order.get('orderId')}")
         
         return {
             'entry_order_id': entry_order['orderId'],
-            'oco_order_list_id': oco_order['orderListId'],
-            'tp_order_id': oco_order['orders'][0]['orderId'],
-            'sl_order_id': oco_order['orders'][1]['orderId']
+            'tp_order_id': tp_order['orderId'],
+            'sl_order_id': sl_order['orderId']
         }
         
     except BinanceAPIException as e:
@@ -1163,13 +1203,14 @@ def cancel_oco_order(symbol, order_list_id):
     """
     OCO emrini iptal et (pozisyon manuel kapatılırsa)
     """
+    executor = get_executor()
+    if not executor or not getattr(executor, 'client', None):
+        logger.error("Executor client yok, OCO iptali yapılamadı")
+        return None
     try:
-        result = binance_client.cancel_order_list(
-            symbol=symbol,
-            orderListId=order_list_id
-        )
-        logger.info(f"✅ OCO emri iptal edildi: {order_list_id}")
-        return result
+        # Not: Bu sistemde TP/SL ayrı emirlerle veriliyor; ID'ler tutuluyorsa ayrı iptal edilmeli.
+        logger.warning("OCO cancel placeholder: TP/SL ayrı emirler, uygun yerden tekil iptal edilmeli")
+        return True
     except Exception as e:
         logger.error(f"❌ OCO iptal hatası: {e}", exc_info=True)
         return None

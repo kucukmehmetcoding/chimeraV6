@@ -8,7 +8,7 @@ Tüm gerçek emir yürütme işlemlerini yöneten izole modül.
 import logging
 import time
 from typing import Optional, Dict, List
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 
 logger = logging.getLogger(__name__)
 
@@ -156,10 +156,10 @@ class BinanceFuturesExecutor:
                     'position_amount': float(pos['positionAmt']),
                     'entry_price': float(pos['entryPrice']),
                     'unrealized_pnl': float(pos['unRealizedProfit']),
-                    'leverage': int(pos['leverage']),
-                    'liquidation_price': float(pos['liquidationPrice']),
-                    'margin_type': pos['marginType'],
-                    'isolated_margin': float(pos['isolatedMargin']) if pos['marginType'] == 'isolated' else 0
+                    'leverage': int(pos.get('leverage', 1)),  # ✅ Testnet'te leverage field yok, default 1
+                    'liquidation_price': float(pos.get('liquidationPrice', 0)),
+                    'margin_type': pos.get('marginType', 'cross'),
+                    'isolated_margin': float(pos.get('isolatedMargin', 0)) if pos.get('marginType') == 'isolated' else 0
                 }
             
             return None
@@ -420,7 +420,7 @@ class BinanceFuturesExecutor:
             logger.error(f"❌ Beklenmeyen hata (margin tipi): {e}", exc_info=True)
             return False
     
-    def open_market_order(self, symbol: str, direction: str, quantity_units: float) -> Optional[Dict]:
+    def open_market_order(self, symbol: str, direction: str, quantity_units: float, entry_price: Optional[float] = None, leverage: Optional[int] = None) -> Optional[Dict]:
         """
         Piyasa emri ile pozisyon açar.
         
@@ -433,8 +433,69 @@ class BinanceFuturesExecutor:
             Dict: Emir bilgileri {'orderId', 'symbol', 'side', 'avgPrice', ...} veya None
         """
         try:
-            # Miktarı yuvarla
+            # Miktarı yuvarla (aşağı)
             rounded_qty = self.round_quantity(symbol, quantity_units)
+            original_qty = quantity_units
+            # Min margin enforcement (post-rounding): Gerekliyse yukarı yuvarla
+            try:
+                # Config'ten min margin ayarları
+                try:
+                    from src import config as app_config
+                except Exception:
+                    app_config = None
+                min_static = getattr(app_config, 'MIN_MARGIN_USD', 10.0) if app_config else 10.0
+                min_per_lev = getattr(app_config, 'MIN_PER_LEVERAGE_USD', 0.0) if app_config else 0.0
+
+                # Fiyat belirle (entry_price yoksa mark price)
+                price = entry_price
+                if price is None:
+                    try:
+                        mp = self.client.futures_mark_price(symbol=symbol)
+                        price = float(mp.get('markPrice', 0))
+                    except Exception:
+                        price = None
+                if not price or price <= 0:
+                    # Son çare: son trade price
+                    try:
+                        ticker = self.client.futures_symbol_ticker(symbol=symbol)
+                        price = float(ticker.get('price', 0))
+                    except Exception:
+                        price = 0.0
+
+                # Kaldıraç belirle
+                lev = leverage
+                if lev is None or lev <= 0:
+                    pos_info = self.get_position_info(symbol)
+                    lev = int(pos_info.get('leverage', 0)) if pos_info else 0
+                if lev is None or lev <= 0:
+                    lev = getattr(app_config, 'FUTURES_LEVERAGE', 5) if app_config else 5
+
+                # Sabit min margin (10$) – kaldıraç ölçekli min kapalı
+                effective_min_margin = min_static
+                if price and price > 0 and rounded_qty > 0:
+                    margin_now = (rounded_qty * price) / lev
+                else:
+                    margin_now = 0.0
+
+                if price and price > 0 and margin_now + 1e-8 < effective_min_margin:
+                    # Gerekli minimum notional'a göre minimum adet hesapla
+                    required_notional = effective_min_margin * lev
+                    required_units = required_notional / price
+                    # Step size al ve yukarı yuvarla
+                    sym = self.get_symbol_info(symbol)
+                    step = Decimal(str(sym['step_size'])) if sym and sym.get('step_size') else Decimal('0.0001')
+                    units_dec = Decimal(str(required_units))
+                    n = (units_dec / step).quantize(Decimal('1'), rounding=ROUND_UP)
+                    rounded_up_units = float(n * step)
+                    if rounded_up_units > rounded_qty:
+                        logger.info(
+                            f"   🛡️ MinMargin Enforce@Exec: Qty {rounded_qty} → {rounded_up_units} | Price={price:.6f} | Lev={lev}x | MinMargin=${effective_min_margin:.2f}"
+                        )
+                        rounded_qty = rounded_up_units
+                else:
+                    logger.debug(f"   🛡️ MinMargin OK@Exec: Margin=${margin_now:.2f} >= ${effective_min_margin:.2f}")
+            except Exception as e:
+                logger.error(f"   ❌ MinMargin enforcement (executor) hatası: {e}")
             
             if rounded_qty == 0:
                 logger.error(f"❌ {symbol} için geçersiz miktar: {quantity_units} → {rounded_qty}")
@@ -443,7 +504,7 @@ class BinanceFuturesExecutor:
             # LONG = BUY, SHORT = SELL
             side = 'BUY' if direction.upper() == 'LONG' else 'SELL'
             
-            logger.warning(f"⚠️ GERÇEK EMİR GÖNDERİLİYOR: {symbol} {side} {rounded_qty} (MARKET)")
+            logger.warning(f"⚠️ GERÇEK EMİR GÖNDERİLİYOR: {symbol} {side} {rounded_qty} (MARKET) — orijinal={original_qty}")
             
             # Piyasa emri gönder
             order = self.client.futures_create_order(
@@ -453,11 +514,72 @@ class BinanceFuturesExecutor:
                 quantity=rounded_qty
             )
             
-            logger.info(f"✅ {symbol} pozisyon AÇILDI:")
-            logger.info(f"   Order ID: {order['orderId']}")
-            logger.info(f"   Side: {side}")
-            logger.info(f"   Quantity: {order['executedQty']}")
-            logger.info(f"   Avg Price: {order.get('avgPrice', 'N/A')}")
+            order_id = order['orderId']
+            logger.info(f"✅ {symbol} pozisyon emri gönderildi: Order ID {order_id}")
+            
+            # 🔄 KRİTİK: Market order asenkron dolabilir, kısa bekleyip tekrar sorgula
+            import time
+            time.sleep(0.5)  # 500ms bekle (market order fill için)
+            
+            # Order bilgisini tekrar sorgula (güncel executedQty için)
+            try:
+                order_info = self.client.futures_get_order(symbol=symbol, orderId=order_id)
+                executed_qty = float(order_info.get('executedQty', 0))
+                avg_price = float(order_info.get('avgPrice', 0))
+                order_status = order_info.get('status', 'UNKNOWN')
+                
+                logger.info(f"📊 {symbol} Order Durumu (500ms sonra):")
+                logger.info(f"   Order ID: {order_id}")
+                logger.info(f"   Status: {order_status}")
+                logger.info(f"   Side: {side}")
+                logger.info(f"   Requested Qty: {rounded_qty}")
+                logger.info(f"   Executed Qty: {executed_qty}")
+                logger.info(f"   Avg Price: {avg_price}")
+            except Exception as e:
+                logger.warning(f"⚠️ Order bilgisi sorgulanamadı, ilk yanıtı kullanıyorum: {e}")
+                executed_qty = float(order.get('executedQty', 0))
+                avg_price = float(order.get('avgPrice', 0))
+                order_status = order.get('status', 'UNKNOWN')
+            
+            # 🚨 EXECUTED QTY = 0 KONTROLÜ
+            if executed_qty <= 0:
+                logger.error(f"❌ {symbol} POZİSYON AÇILAMADI: Executed Quantity = {executed_qty} (SIFIR veya NEGATİF!)")
+                logger.error(f"   Order ID: {order_id}, Status: {order_status}")
+                
+                # Status NEW ise, biraz daha bekleyip tekrar dene
+                if order_status == 'NEW':
+                    logger.warning(f"   ⏳ Order Status=NEW, 1 saniye daha bekleniyor...")
+                    time.sleep(1.0)
+                    try:
+                        order_info = self.client.futures_get_order(symbol=symbol, orderId=order_id)
+                        executed_qty = float(order_info.get('executedQty', 0))
+                        avg_price = float(order_info.get('avgPrice', 0))
+                        order_status = order_info.get('status', 'UNKNOWN')
+                        logger.info(f"   🔄 2. Kontrol: Executed Qty = {executed_qty}, Status = {order_status}")
+                    except Exception as e:
+                        logger.error(f"   ❌ 2. kontrol başarısız: {e}")
+                
+                # Hala 0 ise, gerçekten sorun var
+                if executed_qty <= 0:
+                    logger.error(f"   OLASI NEDENLER:")
+                    logger.error(f"   1. Minimum notional değer çok düşük (genelde ~$100 gerekir)")
+                    logger.error(f"   2. Step size yuvarlama hatası")
+                    logger.error(f"   3. Market depth yetersiz (likidite problemi)")
+                    logger.error(f"   4. Symbol askıya alınmış olabilir (TRADING durumu kontrol et)")
+                    return None
+            
+            # 🚨 AVG PRICE = 0 KONTROLÜ
+            if avg_price <= 0:
+                logger.error(f"❌ {symbol} POZİSYON AÇILAMADI: Avg Price = {avg_price} (GEÇERSİZ!)")
+                logger.error(f"   Executed Qty: {executed_qty}, Order ID: {order_id}")
+                return None
+            
+            logger.info(f"✅ {symbol} POZİSYON BAŞARIYLA AÇILDI: {executed_qty} adet @ ${avg_price}")
+            
+            # Güncellenmiş order bilgisini döndür
+            order['executedQty'] = str(executed_qty)
+            order['avgPrice'] = str(avg_price)
+            order['status'] = order_status
             
             return order
             
@@ -502,7 +624,18 @@ class BinanceFuturesExecutor:
             Dict: {'sl_order_id', 'tp_order_id'} veya None
         """
         try:
+            # 🚨 KRİTİK: Quantity kontrolü (0 ise SL/TP yerleştirme!)
+            if quantity_units <= 0:
+                logger.error(f"❌ {symbol} SL/TP yerleştirilemez: Quantity = {quantity_units} (SIFIR veya NEGATİF!)")
+                return None
+            
             rounded_qty = self.round_quantity(symbol, quantity_units)
+            
+            # ✅ Yuvarlama sonrası tekrar kontrol
+            if rounded_qty <= 0:
+                logger.error(f"❌ {symbol} SL/TP yerleştirilemez: Rounded Quantity = {rounded_qty} (orijinal: {quantity_units})")
+                logger.error(f"   NEDEN: Step size çok büyük, quantity çok küçük yuvarlandı!")
+                return None
             
             # FİYATLARI YUVARLA
             symbol_info = self.get_symbol_info(symbol)

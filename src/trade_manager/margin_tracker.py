@@ -58,8 +58,8 @@ class MarginTracker:
             
             for pos in positions:
                 # Margin = Position Value / Leverage
-                position_value = pos.position_size * pos.entry_price
-                leverage = getattr(pos, 'leverage', 8)  # Default 8x
+                position_value = pos.position_size_units * pos.entry_price  # ✅ position_size → position_size_units
+                leverage = getattr(pos, 'leverage', 10)  # Default 10x
                 margin = position_value / leverage
                 
                 total_margin += margin
@@ -163,8 +163,8 @@ class MarginTracker:
             
             breakdown = []
             for pos in positions:
-                position_value = pos.position_size * pos.entry_price
-                leverage = getattr(pos, 'leverage', 8)
+                position_value = pos.position_size_units * pos.entry_price  # ✅ position_size → position_size_units
+                leverage = getattr(pos, 'leverage', 10)
                 margin = position_value / leverage
                 margin_percent = margin / self.balance_usd if self.balance_usd > 0 else 0.0
                 

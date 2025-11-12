@@ -14,7 +14,7 @@ else:
     print(f"Config Uyarı: .env dosyası bulunamadı: {dotenv_path}")
 
 # --- BOT Ayarları ---
-BOT_VERSION = "5.0-AutoPilot" # GÜNCELLENDİ: v5.0 Oto-Pilot Trading Engine
+BOT_VERSION = "10.6-Hybrid" # v10.6 Hybrid Strategy - Real-time EMA Crossover + 1H Confirmation
 
 # --- API Anahtarları ---
 # Testnet moduna göre key seçimi
@@ -78,8 +78,48 @@ MAX_COINS_TO_SCAN = int(os.getenv("MAX_COINS_TO_SCAN", 600))  # 300 → 600 (dah
 # Hafif artan gecikme (rate limit güvenliği) fakat toplam kapsam daha büyük
 SCAN_DELAY_SECONDS = float(os.getenv("SCAN_DELAY_SECONDS", 0.7))  # 0.5 → 0.7
 
+# 🆕 v10.0 MEHMET KÜÇÜK STRATEJİSİ - 15m Fast Trading Mode (DEPRECATED - use 1H EMA mode)
+# True: Sadece 15m timeframe, Mehmet Küçük stratejisi, sabit SL/TP/Leverage
+# False: Eski multi-timeframe sistem (1D/4H/1H) ve tüm stratejiler
+ENABLE_15M_FAST_MODE = os.getenv("ENABLE_15M_FAST_MODE", "False").lower() == "true"
+
+# 15m Fast Mode Parametreleri (sadece ENABLE_15M_FAST_MODE=True ise kullanılır)
+FAST_MODE_TIMEFRAME = "15m"  # Sabit 15 dakika
+FAST_MODE_TP_PERCENT = 25.0  # TP: Entry'den +%25 (DEPRECATED - margin-based kullan)
+FAST_MODE_SL_PERCENT = 5.0   # SL: Entry'den -%5 (DEPRECATED - margin-based kullan)
+FAST_MODE_LEVERAGE = 10      # Sabit 10x kaldıraç
+FAST_MODE_BASE_SIZE_USD = 10.0  # Base position size: 10 USD (margin = 10 × leverage = 100 USD position)
+
+# 🆕 v10.4: Margin-based TP/SL (unrealized PnL ile margin tracking)
+FAST_MODE_TP_MARGIN = 14.0   # TP: Margin $10 → $14 olunca kapat (+$4 kar)
+FAST_MODE_SL_MARGIN = 9.0    # SL: Margin $10 → $9 olunca kapat (-$1 zarar)
+# R:R Ratio: 4.0 ($4 kar / $1 zarar)
+
+# 🆕 v10.5: 1H EMA CROSSOVER MODE - EMA5 x EMA20 kesişim stratejisi
+# True: 1 saatlik EMA crossover aktif (15m devre dışı kalır)
+# False: Eski sistemler aktif
+ENABLE_1H_EMA_MODE = os.getenv("ENABLE_1H_EMA_MODE", "True").lower() == "true"
+
+# 1H EMA Mode Parametreleri
+EMA_MODE_TIMEFRAME = "1h"           # Sabit 1 saat
+EMA_MODE_LEVERAGE = 10              # Kaldıraç (10x)
+EMA_MODE_BASE_SIZE_USD = 10.0       # Base margin ($10)
+EMA_MODE_TP_MARGIN = 14.0           # TP: Margin $10 → $14 olunca kapat (+$4 kar)
+EMA_MODE_SL_MARGIN = 9.0            # SL: Margin $10 → $9 olunca kapat (-$1 zarar)
+# R:R Ratio: 4.0 ($4 kar / $1 zarar)
+
+# 🆕 v10.6: WEBSOCKET REAL-TIME MONITORING - Phase 1
+# WebSocket için kline stream interval (crossover detection için)
+WEBSOCKET_KLINE_INTERVAL = "15m"    # 15 dakikalık mumlar (real-time monitoring)
+
 # v8.1: Rotating Scan (tüm coinlerin döngüsel taranması)
 ENABLE_ROTATING_SCAN = os.getenv("ENABLE_ROTATING_SCAN", "True").lower() == "true"  # True: Rotating mode, False: İlk N coin
+SCAN_CHUNK_SIZE = int(os.getenv("SCAN_CHUNK_SIZE", 120))  # Her cycle taranacak alt küme (örn. 120 coin)
+ADAPTIVE_CHUNK_ENABLED = os.getenv("ADAPTIVE_CHUNK_ENABLED", "True").lower() == "true"  # Hacim / volatilite önceliklendirme
+CHUNK_HIGH_VOLUME_THRESHOLD_USD = float(os.getenv("CHUNK_HIGH_VOLUME_THRESHOLD_USD", 5_000_000))  # 24h USDT hacmi eşiği
+CHUNK_HIGH_VOLATILITY_THRESHOLD = float(os.getenv("CHUNK_HIGH_VOLATILITY_THRESHOLD", 0.08))  # ATR/price oranı
+CHUNK_RECENT_SIGNAL_BOOST_HOURS = int(os.getenv("CHUNK_RECENT_SIGNAL_BOOST_HOURS", 6))  # Son X saatte sinyal alan coin öncelik artışı
+CHUNK_PRIORITY_LOG_INTERVAL = int(os.getenv("CHUNK_PRIORITY_LOG_INTERVAL", 3600))  # Öncelik dump süresi (sn)
 
 # --- v4.0 Enhanced: Dinamik Coin Listesi ---
 # 'MANUAL': CORRELATION_GROUPS içindeki coinleri kullan (106 coin)
@@ -112,7 +152,7 @@ BLACKLISTED_SYMBOLS = {
 USE_FIXED_RISK_USD = True  # True: Sabit risk ($), False: Portföy yüzdesi
 FIXED_RISK_USD = float(os.getenv("FIXED_RISK_USD", 20.0))  # Sabit risk miktarı (USD)
 # v9.0 PRECISION: Minimum RR oranı yükseltildi
-MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 1.5))  # 1.0 → 1.5 (daha kaliteli işlemler)
+MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 0.95))  # Geçici minimal gevşetme: 1.5 → 0.95
 USE_REAL_BALANCE = os.getenv("USE_REAL_BALANCE", "True").lower() == "true"  # Gerçek bakiyeyi Binance'den al
 
 # 🎯 v9.0 PRECISION MODE: KALİTELİ SİNYALLERE YÜKSEK POZİSYON
@@ -125,8 +165,8 @@ FIXED_RISK_USD = float(os.getenv('FIXED_RISK_USD', '30.0'))  # $15 → $30 (2x a
 # Kullanıcı talebi: "Günde 1-2 pozisyon, kullanılan margin çok düşük (5 USD)"
 # ÖNEMLİ: Bu değer MARGIN (teminat), position value DEĞİL!
 # Örnek: 150 USD margin × 8x kaldıraç = 1200 USD position value
-MIN_MARGIN_USD = float(os.getenv('MIN_MARGIN_USD', '150.0'))  # Minimum kullanılan margin
-MAX_MARGIN_USD = float(os.getenv('MAX_MARGIN_USD', '300.0'))  # Maksimum kullanılan margin
+MIN_MARGIN_USD = float(os.getenv('MIN_MARGIN_USD', '10.0'))   # Minimum kullanılan margin (İSTENEN: $10)
+MAX_MARGIN_USD = float(os.getenv('MAX_MARGIN_USD', '30.0'))   # Maksimum kullanılan margin (İSTENEN: $30)
 
 # Eski değerler (yedek - artık kullanılmıyor)
 MIN_POSITION_VALUE_USD = MIN_MARGIN_USD * 8  # Geriye dönük uyumluluk için
@@ -135,19 +175,37 @@ MAX_POSITION_VALUE_USD = MAX_MARGIN_USD * 8  # Geriye dönük uyumluluk için
 BASE_RISK_PERCENT = 1.0  # Varsayılan %1 risk (dinamik sistem kapalıysa)
 
 # v9.0 PRECISION: Az ama kaliteli sinyal → Pozisyon limitleri ARTTIRILDI
-MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", 7))  # 3 → 7 (günde 2-3 sinyal × 2-3 gün = 7 pozisyon)
+# v11.1 LIVE MODE: 20'den 15'e düşürüldü (canlı mod için güvenlik)
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", 15))  # 3 → 7 → 20 → 15
 MAX_RISK_PER_GROUP = float(os.getenv("MAX_RISK_PER_GROUP", 30.0))  # 15.0 → 30.0 (kaliteli sinyallere daha fazla risk)
 USE_KELLY_ADJUSTMENT = os.getenv("USE_KELLY_ADJUSTMENT", "True").lower() == "true"  # Kelly Criterion aktif
 # 🆕 v9.3: Kelly maksimum fraksiyon limiti (ek güvenlik)
 KELLY_MAX_FRACTION = float(os.getenv("KELLY_MAX_FRACTION", 0.15))  # Kelly yüzdesi üst sınırı (örn. %15)
 # v9.0 PRECISION: MIN RR oranı 1.5'e sabitlendi (kaliteli işlemler)
-MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 1.5))  # Minimum R:R oranı (önceki: 1.8)
+MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 0.95))  # Geçici minimal gevşetme: 1.5 → 0.95
 MAX_POSITIONS_PER_SYMBOL = int(os.getenv("MAX_POSITIONS_PER_SYMBOL", 1))
+
+# 🔄 BREAKOUT L1 scalp fallback toggle
+ENABLE_BREAKOUT_SCALP_FALLBACK = os.getenv("ENABLE_BREAKOUT_SCALP_FALLBACK", "True").lower() == "true"
+# Semi / Extended squeeze ek sıkılaştırma configleri
+BREAKOUT_SEMI_EXT_BBW_PERCENTILE_MAX = float(os.getenv("BREAKOUT_SEMI_EXT_BBW_PERCENTILE_MAX", 18.0))
+# Ek hacim/body/distance tighten farkları (config ile override edilebilir)
+BREAKOUT_SEMI_EXT_VOLUME_EXTRA = float(os.getenv("BREAKOUT_SEMI_EXT_VOLUME_EXTRA", 0.15))
+BREAKOUT_EXT_VOLUME_EXTRA = float(os.getenv("BREAKOUT_EXT_VOLUME_EXTRA", 0.25))
+BREAKOUT_SEMI_EXT_BODY_EXTRA = float(os.getenv("BREAKOUT_SEMI_EXT_BODY_EXTRA", 3.0))
+BREAKOUT_EXT_BODY_EXTRA = float(os.getenv("BREAKOUT_EXT_BODY_EXTRA", 5.0))
+BREAKOUT_SEMI_EXT_DISTANCE_EXTRA = float(os.getenv("BREAKOUT_SEMI_EXT_DISTANCE_EXTRA", 0.03))
+BREAKOUT_EXT_DISTANCE_EXTRA = float(os.getenv("BREAKOUT_EXT_DISTANCE_EXTRA", 0.05))
+
+# 🔧 Dinamik Minimum Margin: En az (MIN_MARGIN_USD, MIN_PER_LEVERAGE_USD × leverage)
+# Not: Mutlak 10–30$ aralığını korumak için kaldıraç bazlı minimumu kapatıyoruz (0.0)
+MIN_PER_LEVERAGE_USD = float(os.getenv("MIN_PER_LEVERAGE_USD", 0.0))
 
 # --- v5.0 AUTO-PILOT: Sermaye Yönetimi (Capital Manager) ---
 MAX_DRAWDOWN_PERCENT = float(os.getenv("MAX_DRAWDOWN_PERCENT", -50.0))  # Devre kesici limiti (%)
 PROFIT_TARGET_PERCENT = float(os.getenv("PROFIT_TARGET_PERCENT", 40.0))  # Kâr realizasyonu hedefi (%)
-AUTO_CLOSE_ON_CIRCUIT_BREAKER = os.getenv("AUTO_CLOSE_ON_CIRCUIT_BREAKER", "False").lower() == "true"  # ⚠️ TEHLİKELİ!
+# v11.1 LIVE MODE: Otomatik kapanma AKTİF (maksimum zararda bot durur)
+AUTO_CLOSE_ON_CIRCUIT_BREAKER = os.getenv("AUTO_CLOSE_ON_CIRCUIT_BREAKER", "True").lower() == "true"  # ✅ GÜVENLİK
 AUTO_TRANSFER_PROFIT = os.getenv("AUTO_TRANSFER_PROFIT", "False").lower() == "true"  # Otomatik kâr transferi
 # 🆕 v9.3 PORTFÖY GÜVENLİĞİ: Günlük risk bütçesi ve devre kesici
 MAX_DAILY_RISK_PERCENT = float(os.getenv("MAX_DAILY_RISK_PERCENT", 5.0))  # Günlük toplam yeni risk bütçesi (% portföy)
@@ -162,7 +220,7 @@ DYNAMIC_LEVERAGE_ENABLED = os.getenv("DYNAMIC_LEVERAGE_ENABLED", "True").lower()
 
 # Varsayılan kaldıraç (dinamik sistem kapalıysa kullanılır)
 # Dinamik sistemde bu değer referans olarak kullanılır
-FUTURES_LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", 8))  # Varsayılan 8x kaldıraç
+FUTURES_LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", 10))  # Varsayılan 10x kaldıraç
 
 # DİNAMİK SİSTEM: SL mesafesine göre kaldıraç seçimi
 # Örnek: SL %1 dar → 10x kaldıraç, SL %10 geniş → 3x kaldıraç
@@ -277,11 +335,15 @@ STALE_SENTIMENT_MINUTES = int(os.getenv("STALE_SENTIMENT_MINUTES", 180))  # 3 sa
 # Sadece A ve B grade sinyaller kabul edilir (C ve D reddedilir)
 # v9.0 UPDATED: Kaliteli sinyallere DAHA FAZLA risk (A grade için 1.3x bonus)
 QUALITY_MULTIPLIERS = {
-    'A': 1.25,  # Hafif ayarlandı: A grade çok agresif olmasın (1.25x)
-    'B': 1.0,   # B normal risk
-    'C': 0.6,   # Mikro risk → kabul edilebilir düşük kalite (penalize edilmiş)
-    'D': 0.1    # Çok düşük ama tamamen veto değil (isteğe bağlı kapatılabilir)
+    'A': 1.25,  # Aynı
+    'B': 1.0,
+    'C': 0.6,   # Minimal gevşetme paketi: C şimdilik korunuyor (gerekirse 0.7 yapılabilir)
+    'D': 0.1
 }
+
+# --- Minimal Gevşetme: Fear & Greed eşikleri ---
+# LONG için aşırı korku alt limiti (contrarian pozitif), önceki: 25
+FNG_LONG_EXTREME_LOW = int(os.getenv("FNG_LONG_EXTREME_LOW", 28))
 
 # --- Secondary R:R Tier (Daha fazla sinyal yakalamak için) ---
 # Birincil eşik yine MIN_RR_RATIO (dosyada daha üstte tanımlı)
@@ -343,11 +405,17 @@ BREAKOUT_REQUIRE_EXTRA_CONFIRM_OUTSIDE_CORE = bool(int(os.getenv("BREAKOUT_REQUI
 BREAKOUT_MIN_SQUEEZE_BARS = int(os.getenv("BREAKOUT_MIN_SQUEEZE_BARS", 5))
 BREAKOUT_MAX_SQUEEZE_BARS = int(os.getenv("BREAKOUT_MAX_SQUEEZE_BARS", 20))
 BREAKOUT_BBW_PERCENTILE_MAX = float(os.getenv("BREAKOUT_BBW_PERCENTILE_MAX", 15.0))
-BREAKOUT_VOLUME_RATIO_MIN_RELAXED = float(os.getenv("BREAKOUT_VOLUME_RATIO_MIN_RELAXED", 2.25))  # 2.5x -> 2.25x
+BREAKOUT_VOLUME_RATIO_MIN_RELAXED = float(os.getenv("BREAKOUT_VOLUME_RATIO_MIN_RELAXED", 2.20))  # Minimal gevşetme: 2.25x -> 2.20x (~+10% tolerans)
 BREAKOUT_VOLUME_INCREASE_MIN_RELAXED = float(os.getenv("BREAKOUT_VOLUME_INCREASE_MIN_RELAXED", 27.0))  # 30% -> 27%
 BREAKOUT_BODY_STRENGTH_MIN_RELAXED = float(os.getenv("BREAKOUT_BODY_STRENGTH_MIN_RELAXED", 54.0))  # 60% -> 54%
 BREAKOUT_DISTANCE_MIN_RELAXED = float(os.getenv("BREAKOUT_DISTANCE_MIN_RELAXED", 0.27))  # 0.30% -> 0.27%
 ENABLE_BREAKOUT_RELAX_PHASE = bool(int(os.getenv("ENABLE_BREAKOUT_RELAX_PHASE", 1)))
+
+# --- Breakout Extended Sıkışma Kabul (uzun squeeze durumları için) ---
+# Sıkışma süresi max_bars'ı aştığında, aşırı düşük BBW percentile ile ek kabul
+ENABLE_BREAKOUT_EXTENDED_SQUEEZE = bool(int(os.getenv("ENABLE_BREAKOUT_EXTENDED_SQUEEZE", 1)))
+BREAKOUT_EXT_SQUEEZE_MAX_BARS = int(os.getenv("BREAKOUT_EXT_SQUEEZE_MAX_BARS", 30))
+BREAKOUT_EXT_BBW_PERCENTILE_MAX = float(os.getenv("BREAKOUT_EXT_BBW_PERCENTILE_MAX", 12.0))  # EXT kabul için daha sıkı BBW (%12)
 
 # Pullback VWAP toleransı (çok hafif gevşetme, ATR yüksekse genişletme kapalı)
 PULLBACK_VWAP_TOLERANCE_LONG = float(os.getenv("PULLBACK_VWAP_TOLERANCE_LONG", 0.0115))  # 1.15%
@@ -621,6 +689,146 @@ def auto_assign_correlation_group(symbol: str) -> str:
     
     # Hiçbir kategori uymazsa
     return 'OTHER'
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# v10.7.1 FIXED MARGIN SYSTEM - SABİT MARGIN SİSTEMİ
+# ═══════════════════════════════════════════════════════════════════════
+
+# Her pozisyon için sabit değerler
+FIXED_MARGIN_USD = 10.0        # Her pozisyon 10 USD margin
+FIXED_MARGIN_TP_RATIO = 1.40   # TP hedef değeri: 10 × 1.40 = 14 USD (margin + %40 kar)
+FIXED_MARGIN_SL_RATIO = 0.90   # SL hedef değeri: 10 × 0.90 = 9 USD (margin - %10 zarar)
+
+# Hesaplanan değerler
+FIXED_TARGET_TP_VALUE = FIXED_MARGIN_USD * FIXED_MARGIN_TP_RATIO  # 14 USD (10 + 4)
+FIXED_TARGET_SL_VALUE = FIXED_MARGIN_USD * FIXED_MARGIN_SL_RATIO  # 9 USD (10 - 1)
+FIXED_TP_PROFIT = FIXED_TARGET_TP_VALUE - FIXED_MARGIN_USD        # +4 USD (%40 kar)
+FIXED_SL_LOSS = FIXED_MARGIN_USD - FIXED_TARGET_SL_VALUE          # +1 USD (%10 zarar)
+
+# ═══════════════════════════════════════════════════════════════════════
+# v11.0 HTF-LTF STRATEGY SETTINGS (High Timeframe Filter + Low Timeframe Trigger)
+# ═══════════════════════════════════════════════════════════════════════
+
+# --- Timeframe Settings ---
+HTF_TIMEFRAME = '1h'       # High Timeframe (Ana trend filtresi)
+LTF_TIMEFRAME = '15m'      # Low Timeframe (Giriş tetikleyicisi)
+
+# --- HTF (1H) Indicator Settings ---
+HTF_EMA_PERIOD = 50        # 1H EMA periyodu (trend filtresi)
+HTF_RSI_PERIOD = 14        # 1H RSI periyodu
+HTF_MACD_FAST = 12         # 1H MACD fast period
+HTF_MACD_SLOW = 26         # 1H MACD slow period
+HTF_MACD_SIGNAL = 9        # 1H MACD signal period
+
+# --- LTF (15M) Indicator Settings ---
+LTF_EMA_SHORT = 5          # 15M kısa EMA (trigger)
+LTF_EMA_LONG = 20          # 15M uzun EMA (trigger)
+LTF_RSI_PERIOD = 14        # 15M RSI periyodu
+LTF_MACD_FAST = 12         # 15M MACD fast
+LTF_MACD_SLOW = 26         # 15M MACD slow
+LTF_MACD_SIGNAL = 9        # 15M MACD signal
+
+# --- LTF (15M) Signal Thresholds ---
+LTF_RSI_BULL_MIN = 50      # LONG için minimum RSI
+LTF_RSI_BULL_MAX = 75      # LONG için maximum RSI (aşırı şişme filtresi)
+LTF_RSI_BEAR_MIN = 25      # SHORT için minimum RSI (aşırı satış filtresi)
+LTF_RSI_BEAR_MAX = 50      # SHORT için maximum RSI
+
+# --- Risk Filters ---
+SCALP_MAX_ATR_PERCENT = 2.0      # Maksimum ATR % (volatilite filtresi)
+VOLUME_CONFIRMATION_REQUIRED = True  # Hacim onayı gerekli mi?
+VOLUME_SMA_PERIOD = 20           # Hacim ortalaması periyodu
+
+# --- Data Fetch Settings ---
+HTF_CANDLE_LIMIT = 100     # 1H için çekilecek mum sayısı (EMA50 için yeterli)
+LTF_CANDLE_LIMIT = 100     # 15M için çekilecek mum sayısı
+
+# --- Backward Compatibility (Eski sistemle uyumluluk) ---
+PRIMARY_TIMEFRAME = LTF_TIMEFRAME      # '15m'
+SECONDARY_TIMEFRAME = '30m'            # Artık kullanılmıyor
+HYBRID_TIMEFRAME = PRIMARY_TIMEFRAME
+HYBRID_EMA_SHORT = LTF_EMA_SHORT       # 5
+HYBRID_EMA_LONG = LTF_EMA_LONG         # 20
+HYBRID_WARMUP_CANDLES = 50
+
+# --- 1H Confirmation Layer Settings ---
+HYBRID_CONFIRMATION_TF = '1h'  # Confirmation için timeframe
+HYBRID_CONFIRMATION_LIMIT = 50  # 1H için çekilecek mum sayısı
+
+# Scoring weights (toplam 100 puan)
+HYBRID_TREND_WEIGHT = 30    # EMA trend alignment
+HYBRID_STRENGTH_WEIGHT = 25  # ADX strength
+HYBRID_MOMENTUM_WEIGHT = 25  # MACD momentum
+HYBRID_RSI_WEIGHT = 20       # RSI levels
+
+# --- Smart Execution Thresholds ---
+HYBRID_MARKET_THRESHOLD = 70   # Score ≥70 → MARKET order
+HYBRID_PARTIAL_THRESHOLD = 50  # Score 50-69 → PARTIAL (50% market + 50% limit)
+# Score <50 → LIMIT order
+
+# --- Order Execution Settings ---
+HYBRID_LIMIT_PRICE_OFFSET = 0.001  # 0.1% fiyat offset (limit emirler için)
+HYBRID_PARTIAL_MARKET_RATIO = 0.5  # Partial'da market kısmının oranı (50%)
+
+# --- Order Tracker Settings ---
+HYBRID_ORDER_TIMEOUT = 300  # Limit emir timeout süresi (saniye) - 5 dakika
+HYBRID_ORDER_CHECK_INTERVAL = 10  # Order status kontrolü (saniye)
+
+# --- Risk Management (v10.6 için) ---
+# Not: Mevcut MAX_OPEN_POSITIONS, MAX_POSITIONS_PER_SYMBOL ayarları kullanılacak
+# v10.6 pozisyonları da aynı limitlere tabi olacak
+
+# ═══════════════════════════════════════════════════════════════════════
+# v10.9 HYBRID SYSTEM - Scheduled Scan + WebSocket Monitoring (OPTIMIZED)
+# ═══════════════════════════════════════════════════════════════════════
+
+# --- Scheduled Full Market Scan (her 5 dakika - AGRESIF TEST) ---
+ADAPTIVE_SCAN_INTERVAL = int(os.getenv("ADAPTIVE_SCAN_INTERVAL", 300))  # 5 dakika (daha sık scan)
+
+# --- Proximity Detection for WebSocket Monitoring (GENİŞLETİLMİŞ) ---
+PROXIMITY_THRESHOLD_PERCENT = float(os.getenv("PROXIMITY_THRESHOLD_PERCENT", 2.0))  # EMA5-EMA20 arası %2 (daha fazla coin)
+MAX_WEBSOCKET_SUBSCRIPTIONS = int(os.getenv("MAX_WEBSOCKET_SUBSCRIPTIONS", 50))  # Max 50 coin WebSocket'te
+WEBSOCKET_CHECK_INTERVAL = int(os.getenv("WEBSOCKET_CHECK_INTERVAL", 5))  # 5 saniyede bir proximity check
+
+# Backward compatibility aliases for v10.6/v10.7
+ADAPTIVE_PROXIMITY_THRESHOLD = PROXIMITY_THRESHOLD_PERCENT  # Old name
+ADAPTIVE_MAX_WATCHLIST_SIZE = MAX_WEBSOCKET_SUBSCRIPTIONS  # Old name
+ADAPTIVE_MIN_WATCHLIST_SIZE = 5  # Min watchlist size
+
+# Instant crossover tespit edildiğinde direkt işlem açılsın mı?
+INSTANT_CROSSOVER_TRADE = os.getenv("INSTANT_CROSSOVER_TRADE", "True").lower() == "true"
+ADAPTIVE_INSTANT_TRADE = INSTANT_CROSSOVER_TRADE  # Old name
+
+# 🚀 v10.8: Multi-Timeframe Confidence System (DÜŞÜRÜLMÜŞ TEST İÇİN)
+MIN_CONFIDENCE_SCORE = float(os.getenv("MIN_CONFIDENCE_SCORE", 0.3))  # 0-1 arası, daha kolay sinyal için 0.3
+
+# 🆕 v10.10: ATR-Based TP/SL System (%100 ATR - Manuel Sistem Kapalı)
+USE_ATR_BASED_TP_SL = os.getenv("USE_ATR_BASED_TP_SL", "True").lower() == "true"  # True = %100 ATR
+ATR_PERIOD = int(os.getenv("ATR_PERIOD", 14))  # ATR hesaplama periyodu
+ATR_TIMEFRAME = os.getenv("ATR_TIMEFRAME", "15m")  # ATR için timeframe
+
+# ATR Multipliers (Conservative → Moderate: R:R = 2.0, daha dar SL)
+ATR_TP_MULTIPLIER = float(os.getenv("ATR_TP_MULTIPLIER", 2.0))  # TP = ATR × 2.0
+ATR_SL_MULTIPLIER = float(os.getenv("ATR_SL_MULTIPLIER", 1.0))  # SL = ATR × 1.0 (v11.1: 1.2 → 1.0, %17 azalma)
+
+# ATR Risk Management (v11.1: SL limitleri güncellendi)
+MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 1.5))  # Minimum R:R 1.5:1
+MAX_SL_USD = float(os.getenv("MAX_SL_USD", 2.5))  # Max SL $2.5 (v11.1: 3.0 → 2.5)
+MIN_TP_USD = float(os.getenv("MIN_TP_USD", 2.0))  # Min TP $2
+MIN_SL_USD = float(os.getenv("MIN_SL_USD", 1.5))  # Min SL $1.5
+
+# A/B Testing: KAPALI - %100 ATR Kullanılıyor
+AB_TEST_MODE = os.getenv("AB_TEST_MODE", "False").lower() == "true"  # False = Pure ATR (A/B test kapalı)
+AB_TEST_RATIO = float(os.getenv("AB_TEST_RATIO", 1.0))  # 1.0 = %100 ATR
+
+# Candle freshness thresholds (saniye)
+CANDLE_FRESHNESS_THRESHOLD = {
+    '15m': 120,  # 2 dakika - 15m mum kapanışından 2dk içinde giriş yap
+    '30m': 300   # 5 dakika - 30m mum kapanışından 5dk içinde doğrula
+}
+
+# ═══════════════════════════════════════════════════════════════════════
 
 
 print("Config: Tüm yapılandırma değişkenleri yüklendi.")

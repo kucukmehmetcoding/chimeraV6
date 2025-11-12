@@ -1,20 +1,47 @@
 # src/main_orchestrator.py
+"""
+ChimeraBot v10.9 - Hybrid System: Scheduled Scan + WebSocket Monitoring
+========================================================================
+
+Multi-Timeframe EMA Strategy (15m + 30m) with Real-time Crossover Detection
+
+Workflow:
+1. Scheduled Full Market Scan (every 15 minutes)
+   - Scans all USDT futures for 15m EMA crossover
+   - Validates with 30m trend confirmation
+   - Opens positions with confidence >= 0.5
+
+2. Proximity Detection
+   - Identifies coins within 1% of crossover
+   - Updates proximity watchlist
+
+3. WebSocket Monitoring (Hybrid Component)
+   - Subscribes to proximity coins
+   - Detects instant crossover
+   - Opens position immediately with 30m validation
+
+4. Trade Manager
+   - Monitors open positions
+   - Executes TP/SL
+"""
 
 import logging
 import time
-import schedule
 import sys
 import os
 import threading
-from datetime import datetime, timezone  # YENİ: datetime import eklendi
+import signal
+import pandas as pd  # 🆕 v10.9: For WebSocket callback
+from datetime import datetime
 from binance.exceptions import BinanceAPIException, BinanceRequestException
-import pandas as pd
 
 # --- Proje Kök Dizinini Ayarla ---
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if project_root not in sys.path: sys.path.append(project_root)
+if project_root not in sys.path:
+    sys.path.append(project_root)
 src_path = os.path.join(project_root, 'src')
-if src_path not in sys.path: sys.path.append(src_path)
+if src_path not in sys.path:
+    sys.path.append(src_path)
 
 # --- Loglamayı Ayarla ---
 try:
@@ -22,1475 +49,1468 @@ try:
     log_level_enum = getattr(logging, config.LOG_LEVEL.upper(), logging.INFO)
     log_file_path = getattr(config, 'LOG_FILE', os.path.join(project_root, 'logs', 'chimerabot.log'))
     log_dir = os.path.dirname(log_file_path)
-    if log_dir and not os.path.exists(log_dir): os.makedirs(log_dir); print(f"Log dizini oluşturuldu: {log_dir}")
-    logging.basicConfig(level=log_level_enum,
-                        format='%(asctime)s - %(levelname)s - [%(module)s:%(lineno)d] - %(message)s',
-                        handlers=[logging.FileHandler(log_file_path, mode='a', encoding='utf-8'),
-                                  logging.StreamHandler(sys.stdout)])
+    if log_dir and not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+    
+    logging.basicConfig(
+        level=log_level_enum,
+        format='%(asctime)s - %(levelname)s - [%(module)s:%(lineno)d] - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file_path, mode='a', encoding='utf-8'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
     logger = logging.getLogger(__name__)
-    logger.info(f"--- ChimeraBot v{getattr(config, 'BOT_VERSION', '?.?')} Başlatılıyor ---")
-except ImportError: print("KRİTİK HATA: src/config.py bulunamadı!"); sys.exit(1)
-except Exception as e: print(f"KRİTİK HATA: Loglama ayarlanırken hata: {e}"); sys.exit(1)
-
-# --- Modülleri ve Veritabanını İçe Aktar ---
-try:
-    from src.data_fetcher import binance_fetcher
-    from src.technical_analyzer import indicators, strategies
-    from src.alpha_engine import analyzer as alpha_analyzer
-    from src.alpha_engine import sentiment_analyzer
-    from src.risk_manager import calculator as risk_calculator
-    from src.risk_manager.dynamic_risk import DynamicRiskCalculator
-    from src.risk_manager.kelly_calculator import KellyPositionSizer
-    from src.trade_manager import manager as trade_manager
-    from src.notifications import telegram as telegram_notifier
-    from src.database.models import db_session, init_db, OpenPosition, AlphaCache, get_db_session
-    from src.data_fetcher.realtime_manager import RealTimeDataManager
-    from src.utils import performance_monitor
-    from src.trade_manager.executor import initialize_executor, get_executor
-    from src.trade_manager.capital_manager import initialize_capital_manager
-    from src.trade_manager.margin_tracker import create_margin_tracker
-    from src.utils.emergency_stop import check_emergency_stop, is_emergency_stop_active
-except ImportError as e:
-    logger.critical(f"❌ Gerekli modül veya veritabanı import edilemedi: {e}", exc_info=True)
-    logger.critical("   Dosya yapısını, __init__.py'ları ve SQLAlchemy/kütüphane bağımlılıklarını kontrol edin.")
+    logger.info(f"--- ChimeraBot v{config.BOT_VERSION} Başlatılıyor ---")
+    
+except ImportError:
+    print("KRİTİK HATA: src/config.py bulunamadı!")
+    sys.exit(1)
+except Exception as e:
+    print(f"KRİTİK HATA: Loglama ayarlanırken hata: {e}")
     sys.exit(1)
 
+# --- Modülleri İçe Aktar ---
+try:
+    from src.data_fetcher import binance_fetcher
+    from src.trade_manager import manager as trade_manager
+    from src.risk_manager import calculator as risk_calculator
+    from src.alpha_engine import analyzer as alpha_analyzer
+    from src.alpha_engine import sentiment_analyzer
+    from src.notifications import telegram as telegram_notifier
+    from src.database.models import db_session, init_db, OpenPosition, TradeHistory, AlphaCache
+    from src.utils.emergency_stop import check_emergency_stop, is_emergency_stop_active
+    
+    # 🆕 v11.0: HTF-LTF Strategy
+    from src.technical_analyzer.htf_ltf_strategy import analyze_htf_ltf_signal
+    from src.technical_analyzer.indicators import add_htf_indicators, add_ltf_indicators
+    
+    # 🆕 v10.8: Multi-Timeframe Analyzer (DEPRECATED - using HTF-LTF now)
+    # from src.technical_analyzer.multi_timeframe_analyzer import (
+    #     check_multi_timeframe_entry,
+    #     detect_proximity_coins  # 🆕 v10.9: Hybrid system
+    # )
+    
+    # Trade manager thread fonksiyonunu import et
+    from src.trade_manager.manager import continuously_check_positions
+    
+except ImportError as e:
+    logger.critical(f"❌ Gerekli modül import edilemedi: {e}", exc_info=True)
+    sys.exit(1)
 
 # --- Global Değişkenler ---
-rate_limit_status = {'binance_delay_multiplier': 1.0, 'last_binance_error_time': 0}
 open_positions_lock = threading.Lock()
-rate_limit_lock = threading.Lock()  # YENİ: Rate limit için thread-safe erişim
 stop_event = threading.Event()
+trade_manager_thread = None
+scanner_thread = None  # 🆕 v10.8: Multi-timeframe scanner thread
+websocket_thread = None  # 🆕 v10.9: Hybrid WebSocket thread
 
-# v5.0: Executor instance (global)
-executor = None
-capital_manager = None
+# 🆕 v10.9: Hybrid System - Proximity Watchlist
+proximity_watchlist = {}  # {symbol: {distance_percent, direction_bias, ema5, ema20, close}}
+proximity_watchlist_lock = threading.Lock()
 
-# v8.1: Rotating coin scan offset (tüm coinlerin taranması için)
-# v9.1: DB'den yükle (restart'ta kaybolmasın)
-def get_coin_scan_offset():
-    """Rotating scan offset'ini DB'den yükle veya 0 döndür"""
-    try:
+# Statistics
+hybrid_stats = {
+    'total_crossovers': 0,
+    'total_signals': 0,
+    'market_executions': 0,
+    'partial_executions': 0,
+    'limit_executions': 0,
+    'avg_score': 0.0,
+    'rejected_signals': 0,
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# POSITION RISK MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════
+
+def can_open_position(symbol: str) -> bool:
+    """Pozisyon açılabilir mi kontrol et"""
+    with open_positions_lock:
         db = db_session()
         try:
-            cache_record = db.query(AlphaCache).filter(AlphaCache.key == 'coin_scan_offset').first()
-            if cache_record and cache_record.value:
-                offset = int(cache_record.value)
-                logger.info(f"🔄 Coin scan offset DB'den yüklendi: {offset}")
-                return offset
+            total_open = db.query(OpenPosition).count()
+            if total_open >= config.MAX_OPEN_POSITIONS:
+                logger.warning(f"Max pozisyon limiti: {total_open}/{config.MAX_OPEN_POSITIONS}")
+                return False
+            
+            symbol_count = db.query(OpenPosition).filter(OpenPosition.symbol == symbol).count()
+            max_per_symbol = getattr(config, 'MAX_POSITIONS_PER_SYMBOL', 1)
+            if symbol_count >= max_per_symbol:
+                logger.warning(f"{symbol} için max pozisyon: {symbol_count}/{max_per_symbol}")
+                return False
+            
+            return True
         except Exception as e:
-            logger.warning(f"Offset yüklenemedi: {e}")
+            logger.error(f"Pozisyon kontrolü hatası: {e}")
+            return False
         finally:
             db_session.remove()
-    except:
-        pass
-    return 0
 
-def save_coin_scan_offset(offset):
-    """Rotating scan offset'ini DB'ye kaydet"""
+
+def get_sentiment_scores(symbol: str) -> dict:
+    """Sentiment skorlarını al"""
     try:
-        db = db_session()
-        try:
-            cache_record = db.query(AlphaCache).filter(AlphaCache.key == 'coin_scan_offset').first()
-            if cache_record:
-                cache_record.value = offset
-                db.merge(cache_record)
-            else:
-                new_cache = AlphaCache(key='coin_scan_offset', value=offset)
-                db.add(new_cache)
-            db.commit()
-            logger.debug(f"🔄 Coin scan offset DB'ye kaydedildi: {offset}")
-        except Exception as e:
-            logger.error(f"Offset kaydedilemedi: {e}")
-            db.rollback()
-        finally:
-            db_session.remove()
-    except:
-        pass
-
-coin_scan_offset = get_coin_scan_offset()  # İlk yüklemede DB'den al
-
-# --- Rate Limit Ayarları ---
-def adjust_rate_limit(increase: bool = True):
-    """
-    Rate limit durumunda delay'i artırır veya azaltır.
-    Thread-safe implementasyon.
-    """
-    global rate_limit_status
-    
-    with rate_limit_lock:
-        current_multiplier = rate_limit_status['binance_delay_multiplier']
+        fng = sentiment_analyzer.fetch_fear_and_greed_index()
         
-        if increase:
-            new_multiplier = min(current_multiplier * 1.5, 16.0)
-            rate_limit_status['binance_delay_multiplier'] = new_multiplier
-            rate_limit_status['last_binance_error_time'] = time.time()
-            logger.warning(f"⚠️ Rate limit artırıldı: {current_multiplier:.1f}x -> {new_multiplier:.1f}x")
-        else:
-            # Azaltma: 5 dakika hata yoksa yarıya düş
-            last_error_time = rate_limit_status.get('last_binance_error_time', 0)
-            if last_error_time > 0 and (time.time() - last_error_time) > 300:
-                new_multiplier = max(current_multiplier * 0.9, 1.0)
-                if new_multiplier < current_multiplier:
-                    rate_limit_status['binance_delay_multiplier'] = new_multiplier
-                    logger.info(f"✅ Rate limit azaltıldı: {current_multiplier:.1f}x -> {new_multiplier:.1f}x")
-                    if new_multiplier == 1.0:
-                        rate_limit_status['last_binance_error_time'] = 0
-
-# --- Yardımcı Fonksiyonlar ---
-def get_btc_correlation(symbol: str, correlation_matrix: dict) -> float:
-    """
-    Verilen symbol için BTC ile korelasyon skorunu döndürür.
-    
-    Args:
-        symbol: Kontrol edilecek sembol (örn: 'PEPEUSDT')
-        correlation_matrix: AlphaCache'den yüklenen korelasyon matrisi
-    
-    Returns:
-        float: Korelasyon skoru (-1.0 ile 1.0 arası), veri yoksa 0.0
-    """
-    if not correlation_matrix:
-        return 0.0
-    
-    try:
-        # DataFrame formatındaki korelasyon matrisinden BTC sütununu oku
-        if 'BTCUSDT' in correlation_matrix and symbol in correlation_matrix['BTCUSDT']:
-            corr_value = correlation_matrix['BTCUSDT'][symbol]
-            return abs(float(corr_value))  # Mutlak değer (negatif korelasyon da önemli)
-        else:
-            return 0.0
+        news_score = 0.0
+        try:
+            news_data = sentiment_analyzer.get_recent_news_sentiment(symbol)
+            if news_data:
+                news_score = news_data.get('avg_sentiment', 0.0)
+        except:
+            pass
+        
+        reddit_score = 0.0
+        try:
+            reddit_data = sentiment_analyzer.get_reddit_sentiment(symbol)
+            if reddit_data:
+                reddit_score = reddit_data.get('avg_sentiment', 0.0)
+        except:
+            pass
+        
+        return {
+            'fear_greed_index': fng,
+            'news_sentiment': news_score,
+            'reddit_sentiment': reddit_score
+        }
     except Exception as e:
-        logger.warning(f"Korelasyon skoru okunamadı ({symbol}): {e}")
-        return 0.0
+        logger.warning(f"Sentiment skorları alınamadı: {e}")
+        return {'fear_greed_index': 50, 'news_sentiment': 0.0, 'reddit_sentiment': 0.0}
 
-# --- Ana Tarama Fonksiyonu ---
-def main_scan_cycle():
-    """
-    Ana tarama döngüsü - regime detection ve sinyal üretimi.
-    Thread-safe ve hata korumalı implementasyon.
-    """
-    logger.info("====== ANA TARAMA DÖNGÜSÜ BAŞLADI ======")
-    
-    # Rate limit azaltma kontrolü
-    adjust_rate_limit(increase=False)
-    
-    # Emergency Stop kontrolü
-    can_trade, stop_reason = check_emergency_stop()
-    if not can_trade:
-        logger.critical(f"🚨 EMERGENCY STOP AKTİF: {stop_reason}")
-        logger.critical("⛔ Yeni pozisyon açılmayacak! EMERGENCY_STOP.flag dosyasını silin ve botu yeniden başlatın.")
-        return
-    
+
+def adjust_score_with_sentiment(score: float, direction: str, sentiment: dict) -> float:
+    """Score'u sentiment ile ağırlıklandır"""
     try:
-        # --- Adım 1: Global Rejim Belirle ---
-        logger.info("--- Adım 1: Global Rejim Belirleniyor ---")
-        btc_1d_raw = binance_fetcher.get_binance_klines(symbol='BTCUSDT', interval='1d', limit=300)
-        btc_4h_raw = binance_fetcher.get_binance_klines(symbol='BTCUSDT', interval='4h', limit=300)
-        global_btc_regime = 'STOP'
+        fng = sentiment.get('fear_greed_index', 50)
         
-        if btc_1d_raw is not None and not btc_1d_raw.empty:
-            btc_1d_indicators = indicators.calculate_indicators(btc_1d_raw.copy())
-            btc_4h_indicators = indicators.calculate_indicators(btc_4h_raw.copy()) if btc_4h_raw is not None else None
-            
-            if not btc_1d_indicators.empty and 'adx14' in btc_1d_indicators.columns and not pd.isna(btc_1d_indicators['adx14'].iloc[-1]):
-                try:
-                    global_btc_regime = strategies.determine_regime(btc_1d_indicators, btc_4h_indicators)
-                    logger.info(f"Global BTC Rejimi: '{global_btc_regime}' olarak belirlendi.")
-                    # --- Rejim Yumuşatma (Smoothing) ---
-                    try:
-                        smoothing_window = getattr(config, 'REGIME_SMOOTHING_WINDOW', 5)
-                        if smoothing_window > 1:
-                            from collections import Counter
-                            with get_db_session() as db_smooth:
-                                regime_record = db_smooth.query(AlphaCache).filter(AlphaCache.key == 'regime_history').first()
-                                history = []
-                                if regime_record and regime_record.value:
-                                    history = regime_record.value
-                                history.append(global_btc_regime)
-                                # Son N değeri tut
-                                history = history[-smoothing_window:]
-                                # Çoğunluk oyu
-                                counts = Counter(history)
-                                majority_regime, majority_count = counts.most_common(1)[0]
-                                smoothed_regime = majority_regime
-                                if smoothed_regime != global_btc_regime:
-                                    logger.info(f"🔁 Rejim Yumuşatma: {global_btc_regime} -> {smoothed_regime} (window={history})")
-                                global_btc_regime = smoothed_regime
-                                # Kaydet
-                                if regime_record:
-                                    regime_record.value = history
-                                    db_smooth.merge(regime_record)
-                                else:
-                                    from src.database.models import AlphaCache as AC
-                                    db_smooth.add(AC(key='regime_history', value=history))
-                            logger.debug(f"Rejim geçmişi güncellendi: {history}")
-                    except Exception as smooth_err:
-                        logger.warning(f"Rejim smoothing uygulanamadı: {smooth_err}")
-                except Exception as e:
-                    logger.error(f"Rejim belirlenirken hata: {e}", exc_info=True)
-            else:
-                logger.error("Rejim belirlenemedi: BTC 1D göstergeleri eksik/NaN.")
+        if direction == 'bullish':
+            if fng < 25:
+                score += 5
+                logger.info(f"   Sentiment boost: +5 (Extreme Fear: {fng})")
+            elif fng > 75:
+                score -= 5
+                logger.info(f"   Sentiment penalty: -5 (Extreme Greed: {fng})")
         else:
-            logger.error("Rejim belirlenemedi: BTC 1D verisi çekilemedi.")
+            if fng > 75:
+                score += 5
+                logger.info(f"   Sentiment boost: +5 (Extreme Greed: {fng})")
+            elif fng < 25:
+                score -= 5
+                logger.info(f"   Sentiment penalty: -5 (Extreme Fear: {fng})")
         
-        # --- Adım 2: Coin Listesi ---
-        logger.info("--- Adım 2: Dinamik Tarama Listesi ---")
+        return max(0, min(100, score))
+    except:
+        return score
+
+
+def calculate_atr_based_sl_tp(symbol: str, direction: str, entry_price: float, score: float) -> tuple:
+    """
+    v10.10 ATR BAZLI DYNAMIK TP/SL SİSTEMİ
+    
+    Volatilite bazlı TP/SL hesaplama:
+    - ATR (Average True Range) kullanarak dinamik seviyeler
+    - TP: Entry ± (ATR × 2.0) - Volatiliteye göre hedef
+    - SL: Entry ± (ATR × 1.0) - Risk-Reward: 2:1
+    
+    Config'den değerler:
+    - ATR_PERIOD: 14
+    - ATR_TP_MULTIPLIER: 2.0
+    - ATR_SL_MULTIPLIER: 1.0
+    - MAX_SL_USD: 2.0 (ATR çok büyükse limit)
+    - MIN_TP_USD: 2.0 (ATR çok küçükse limit)
+    """
+    try:
+        from src.data_fetcher.binance_fetcher import get_binance_klines
+        from src.technical_analyzer.indicators import calculate_atr
+        
+        # Config değerleri
+        MARGIN_USD = config.FIXED_MARGIN_USD
+        LEVERAGE = config.FUTURES_LEVERAGE
+        ATR_PERIOD = config.ATR_PERIOD
+        TP_MULTIPLIER = config.ATR_TP_MULTIPLIER
+        SL_MULTIPLIER = config.ATR_SL_MULTIPLIER
+        MAX_SL_USD = config.MAX_SL_USD
+        MIN_TP_USD = config.MIN_TP_USD
+        MIN_SL_USD = getattr(config, 'MIN_SL_USD', 1.5)  # Yeni: Minimum SL limiti
+        
+        # 1. ATR hesapla (15m timeframe)
+        df = get_binance_klines(symbol, '15m', limit=50)
+        if df is None or df.empty or len(df) < ATR_PERIOD:
+            logger.warning(f"⚠️ {symbol} ATR hesaplanamadı, sabit TP/SL'ye geçiliyor")
+            return calculate_fixed_sl_tp(symbol, direction, entry_price, score)
+        
+        atr = calculate_atr(df, period=ATR_PERIOD)
+        
+        if atr <= 0:
+            logger.warning(f"⚠️ {symbol} ATR=0, sabit TP/SL'ye geçiliyor")
+            return calculate_fixed_sl_tp(symbol, direction, entry_price, score)
+        
+        # 2. Pozisyon büyüklüğü
+        position_size = (MARGIN_USD * LEVERAGE) / entry_price
+        
+        # 3. ATR bazlı TP/SL fiyatları
+        if direction.upper() == 'LONG':
+            tp_price = entry_price + (atr * TP_MULTIPLIER)
+            sl_price = entry_price - (atr * SL_MULTIPLIER)
+        else:  # SHORT
+            tp_price = entry_price - (atr * TP_MULTIPLIER)
+            sl_price = entry_price + (atr * SL_MULTIPLIER)
+        
+        # 4. USD kar/zarar hesapla
+        tp_usd = abs(tp_price - entry_price) * position_size
+        sl_usd = abs(sl_price - entry_price) * position_size
+        rr_ratio = tp_usd / sl_usd if sl_usd > 0 else 0
+        
+        # 5. Limit kontrolleri
+        adjusted = False
+        
+        # SL çok küçükse (noise'a yakalanır) limitele
+        if sl_usd < MIN_SL_USD:
+            logger.warning(f"   ⚠️ SL çok küçük (${sl_usd:.2f}), ${MIN_SL_USD}'ye ayarlanıyor")
+            sl_usd = MIN_SL_USD
+            if direction.upper() == 'LONG':
+                sl_price = entry_price - (sl_usd / position_size)
+            else:
+                sl_price = entry_price + (sl_usd / position_size)
+            adjusted = True
+        
+        # SL çok büyükse limitele
+        if sl_usd > MAX_SL_USD:
+            logger.warning(f"   ⚠️ SL çok büyük (${sl_usd:.2f}), ${MAX_SL_USD}'ye ayarlanıyor")
+            sl_usd = MAX_SL_USD
+            if direction.upper() == 'LONG':
+                sl_price = entry_price - (sl_usd / position_size)
+            else:
+                sl_price = entry_price + (sl_usd / position_size)
+            adjusted = True
+        
+        # TP çok küçükse limitele
+        if tp_usd < MIN_TP_USD:
+            logger.warning(f"   ⚠️ TP çok küçük (${tp_usd:.2f}), ${MIN_TP_USD}'ye ayarlanıyor")
+            tp_usd = MIN_TP_USD
+            if direction.upper() == 'LONG':
+                tp_price = entry_price + (tp_usd / position_size)
+            else:
+                tp_price = entry_price - (tp_usd / position_size)
+            adjusted = True
+        
+        # RR oranını yeniden hesapla
+        if adjusted:
+            tp_usd = abs(tp_price - entry_price) * position_size
+            sl_usd = abs(sl_price - entry_price) * position_size
+            rr_ratio = tp_usd / sl_usd if sl_usd > 0 else 0
+        
+        logger.info(f"📊 {symbol} - ATR Bazlı TP/SL:")
+        logger.info(f"   💰 Margin: ${MARGIN_USD} | Leverage: {LEVERAGE}x")
+        logger.info(f"   📈 Entry: ${entry_price:,.6f}")
+        logger.info(f"   📉 ATR({ATR_PERIOD}): ${atr:.6f}")
+        logger.info(f"   🎯 TP: ${tp_price:,.6f} (ATR×{TP_MULTIPLIER}) → ${tp_usd:.2f} kar")
+        logger.info(f"   🛑 SL: ${sl_price:,.6f} (ATR×{SL_MULTIPLIER}) → ${sl_usd:.2f} zarar")
+        logger.info(f"   ⚖️ Risk-Reward: {rr_ratio:.2f}:1")
+        
+        return sl_price, tp_price
+        
+    except Exception as e:
+        logger.error(f"❌ ATR TP/SL hesaplama hatası: {e}", exc_info=True)
+        logger.warning(f"   Sabit TP/SL'ye geri dönülüyor")
+        return calculate_fixed_sl_tp(symbol, direction, entry_price, score)
+
+
+def calculate_fixed_sl_tp(symbol: str, direction: str, entry_price: float, score: float) -> tuple:
+    """
+    v10.7.1 SABİT MARGIN TP/SL SİSTEMİ
+    
+    Margin bazlı TP/SL hesaplama:
+    - Margin: 10 USD (sabit)
+    - TP: Margin + %40 kar = 14 USD (+4 USD kar)
+    - SL: Margin - %10 zarar = 9 USD (-1 USD zarar)
+    
+    Config'den sabit değerler:
+    - FIXED_MARGIN_USD: 10 USD
+    - FIXED_TARGET_TP_VALUE: 14 USD (10 + 4)
+    - FIXED_TARGET_SL_VALUE: 9 USD (10 - 1)
+    - FIXED_TP_PROFIT: +4 USD (%40 kar)
+    - FIXED_SL_LOSS: +1 USD (%10 zarar)
+    """
+    try:
+        # Config'den sabit değerleri al
+        MARGIN_USD = config.FIXED_MARGIN_USD
+        LEVERAGE = config.FUTURES_LEVERAGE
+        TARGET_TP_VALUE = config.FIXED_TARGET_TP_VALUE
+        TARGET_SL_VALUE = config.FIXED_TARGET_SL_VALUE
+        TP_PROFIT = config.FIXED_TP_PROFIT
+        SL_LOSS = config.FIXED_SL_LOSS
+        
+        # Pozisyon büyüklüğü (coin adedi)
+        position_size = (MARGIN_USD * LEVERAGE) / entry_price
+        
+        # ✅ DOĞRU FORMÜL: Kar/Zarar USD'den fiyata çevirme
+        # TP kar = (tp_price - entry_price) * position_size = TP_PROFIT
+        # tp_price = entry_price + (TP_PROFIT / position_size)
+        # 
+        # SL zarar = (entry_price - sl_price) * position_size = SL_LOSS
+        # sl_price = entry_price - (SL_LOSS / position_size)
+        
+        if direction.upper() == 'LONG':
+            # LONG: TP üstte (+$4 kar), SL altta (-$1 zarar)
+            tp_price = entry_price + (TP_PROFIT / position_size)
+            sl_price = entry_price - (SL_LOSS / position_size)
+        else:
+            # SHORT: TP altta (+$4 kar), SL üstte (-$1 zarar)
+            tp_price = entry_price - (TP_PROFIT / position_size)
+            sl_price = entry_price + (SL_LOSS / position_size)
+        
+        logger.info(f"📊 {symbol} - Sabit Margin TP/SL:")
+        logger.info(f"   💰 Margin: ${MARGIN_USD} | Leverage: {LEVERAGE}x")
+        logger.info(f"   📈 Entry: ${entry_price:,.4f}")
+        logger.info(f"   🎯 TP: ${tp_price:,.4f} → ${TP_PROFIT} kar")
+        logger.info(f"   🛑 SL: ${sl_price:,.4f} → ${SL_LOSS} zarar")
+        
+        return sl_price, tp_price
+        
+    except Exception as e:
+        logger.error(f"SL/TP hesaplama hatası: {e}")
+        return None, None
+
+
+def calculate_hybrid_sl_tp(symbol: str, direction: str, entry_price: float, score: float) -> tuple:
+    """
+    v10.10 HİBRİT TP/SL SİSTEMİ (A/B Testing)
+    
+    A/B Test Modu:
+    - %50 pozisyonlar ATR bazlı (dinamik, volatiliteye göre)
+    - %50 pozisyonlar sabit ($4/$1)
+    
+    Symbol hash'e göre karar:
+    - hash(symbol) % 2 == 0 → ATR bazlı
+    - hash(symbol) % 2 == 1 → Sabit
+    """
+    try:
+        # A/B test modu kapalıysa sadece ATR ya da Sabit kullan
+        if not config.AB_TEST_MODE:
+            if config.USE_ATR_BASED_TP_SL:
+                return calculate_atr_based_sl_tp(symbol, direction, entry_price, score)
+            else:
+                return calculate_fixed_sl_tp(symbol, direction, entry_price, score)
+        
+        # A/B test modu: Symbol hash'e göre karar
+        symbol_hash = hash(symbol)
+        use_atr = (symbol_hash % 2) == 0
+        
+        if use_atr:
+            logger.info(f"🧪 A/B Test: {symbol} → ATR bazlı TP/SL")
+            return calculate_atr_based_sl_tp(symbol, direction, entry_price, score)
+        else:
+            logger.info(f"🧪 A/B Test: {symbol} → Sabit TP/SL")
+            return calculate_fixed_sl_tp(symbol, direction, entry_price, score)
+        
+    except Exception as e:
+        logger.error(f"Hybrid TP/SL hatası: {e}", exc_info=True)
+        # Fallback: Sabit TP/SL
+        return calculate_fixed_sl_tp(symbol, direction, entry_price, score)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 🆕 v10.7 ADAPTIVE SCANNER THREAD
+# ═══════════════════════════════════════════════════════════════════════
+
+def run_adaptive_scanner(scanner, stop_event):
+    """
+    Adaptive scanner thread fonksiyonu.
+    Her ADAPTIVE_SCAN_INTERVAL'de bir full market scan yapar.
+    """
+    global websocket_manager, ema_manager
+    
+    scan_interval = getattr(config, 'ADAPTIVE_SCAN_INTERVAL', 300)
+    max_watchlist = getattr(config, 'ADAPTIVE_MAX_WATCHLIST_SIZE', 20)
+    min_watchlist = getattr(config, 'ADAPTIVE_MIN_WATCHLIST_SIZE', 5)
+    instant_trade = getattr(config, 'ADAPTIVE_INSTANT_TRADE', True)
+    
+    logger.info(f"🔍 Adaptive Scanner thread başlatıldı")
+    logger.info(f"   Scan interval: {scan_interval}s ({scan_interval/60:.1f} min)")
+    logger.info(f"   Watchlist size: {min_watchlist}-{max_watchlist}")
+    logger.info(f"   Instant trade: {instant_trade}")
+    
+    current_watchlist = set()  # Şu anda WebSocket'te olan coinler
+    websocket_started = False  # WebSocket başlatıldı mı?
+    
+    while not stop_event.is_set():
         try:
-            coin_list_mode = getattr(config, 'COIN_LIST_MODE', 'MANUAL')
+            logger.info("\n" + "=" * 70)
+            logger.info("🔍 ADAPTIVE SCAN BAŞLIYOR")
+            logger.info("=" * 70)
             
-            if coin_list_mode.upper() == 'AUTO_FUTURES':
-                logger.info("📡 Coin Listesi Modu: AUTO_FUTURES (Binance Futures tüm USDT çiftleri)")
-                
-                cache_key = 'futures_symbols_list'
-                update_interval = getattr(config, 'AUTO_FUTURES_UPDATE_HOURS', 24) * 3600
-                
-                # YENİ: Context manager kullan
-                with get_db_session() as db:
-                    cached_record = db.query(AlphaCache).filter(AlphaCache.key == cache_key).first()
-                    need_update = True
-                    
-                    if cached_record and cached_record.value:
-                        last_update = cached_record.last_updated
-                        if last_update:
-                            if last_update.tzinfo is None:
-                                last_update = last_update.replace(tzinfo=timezone.utc)
-                            age_seconds = (datetime.now(timezone.utc) - last_update).total_seconds()
-                            if age_seconds < update_interval:
-                                initial_list = cached_record.value
-                                need_update = False
-                                logger.info(f"✅ Futures listesi cache'den yüklendi ({len(initial_list)} coin, {age_seconds/3600:.1f} saat önce güncellendi)")
-                    
-                    if need_update:
-                        initial_list = binance_fetcher.get_all_futures_usdt_symbols()
-                        if initial_list:
-                            if cached_record:
-                                cached_record.value = initial_list
-                                db.merge(cached_record)
-                            else:
-                                new_cache = AlphaCache(key=cache_key, value=initial_list)
-                                db.add(new_cache)
-                            logger.info(f"✅ Futures listesi güncellendi ve cache'e kaydedildi ({len(initial_list)} coin)")
-                        else:
-                            logger.error("❌ Futures listesi çekilemedi!")
-                            if cached_record and cached_record.value:
-                                initial_list = cached_record.value
-                                logger.warning(f"⚠️ Eski cache verisi kullanılıyor ({len(initial_list)} coin)")
-                            else:
-                                logger.error("Cache'de de veri yok, CORRELATION_GROUPS'a dönülüyor")
-                                initial_list = list(getattr(config, 'CORRELATION_GROUPS', {}).keys())
+            # Full market scan
+            scan_results = scanner.full_market_scan()
             
-            else:  # MANUAL mode
-                logger.info("📋 Coin Listesi Modu: MANUAL (CORRELATION_GROUPS)")
-                correlation_groups = getattr(config, 'CORRELATION_GROUPS', {})
-                if not correlation_groups:
-                    logger.error("Config'de CORRELATION_GROUPS yok/boş.")
-                    return
-                initial_list = list(correlation_groups.keys())
+            # 🆕 İlk scan'de WebSocket'i başlat
+            if not websocket_started:
+                logger.info("\n📡 WebSocket Manager başlatılıyor...")
+                try:
+                    websocket_manager.start()
+                    websocket_started = True
+                    logger.info("   ✅ WebSocket bağlantısı kuruldu")
+                except Exception as ws_error:
+                    logger.error(f"   ❌ WebSocket başlatılamadı: {ws_error}")
+                    logger.warning("   ⚠️ Subscription'lar atlanacak, bir sonraki scan'de tekrar denenecek")
             
-            # v8.1: Rotating Queue - Tüm coinlerin taranması için
-            global coin_scan_offset
-            max_coins = getattr(config, 'MAX_COINS_TO_SCAN', 300)
-            enable_rotating = getattr(config, 'ENABLE_ROTATING_SCAN', True)
+            # 1. Instant signals varsa işlem aç
+            if instant_trade and scan_results['instant_signals']:
+                logger.warning(f"\n🚨 {len(scan_results['instant_signals'])} INSTANT CROSSOVER BULUNDU!")
+                logger.warning("⚠️ DEPRECATED: Adaptive scanner artık kullanılmıyor (v11.0 HTF-LTF kullanıyor)")
+                # DEPRECATED: v11.0'da instant crossover için HTF-LTF sistemi kullanılıyor
+                #
+                # for signal in scan_results['instant_signals']:
+                #     try:
+                #         logger.info(f"\n📍 Processing instant signal: {signal['symbol']} → {signal['direction']}")
+                #         ... (handle_ema_crossover kodu kaldırıldı)
+                #     except Exception as e:
+                #         logger.error(f"Instant signal işleme hatası [{signal['symbol']}]: {e}")
+                #         continue
             
-            if enable_rotating and len(initial_list) > max_coins:
-                # Rotating offset hesapla
-                start_idx = coin_scan_offset % len(initial_list)
-                end_idx = (start_idx + max_coins) % len(initial_list)
-                
-                # Wrap-around kontrolü
-                if end_idx > start_idx:
-                    initial_list = initial_list[start_idx:end_idx]
-                else:
-                    # Listenin sonuna gelince başa dön
-                    initial_list = initial_list[start_idx:] + initial_list[:end_idx]
-                
-                logger.info(f"🔄 Rotating Scan: Coins [{start_idx}→{(start_idx + len(initial_list) - 1) % (coin_scan_offset + len(initial_list))}] / Total Pool (Total: {len(initial_list)} coins)")
-                logger.info(f"📊 Bu cycle'da {len(initial_list)} coin taranacak (offset: {coin_scan_offset})")
-                
-                # Sonraki cycle için offset'i artır VE DB'ye kaydet
-                coin_scan_offset += max_coins
-                save_coin_scan_offset(coin_scan_offset)  # 🆕 v9.1: DB'ye kaydet
-                logger.info(f"🔄 Yeni offset: {coin_scan_offset} (DB'ye kaydedildi)")
-            elif len(initial_list) > max_coins:
-                # Eski davranış (backward compatibility - ENABLE_ROTATING_SCAN=False)
-                logger.warning(f"⚠️ Liste çok uzun ({len(initial_list)}), ilk {max_coins} coin seçiliyor (Rotating KAPALI)")
-                initial_list = initial_list[:max_coins]
+            # 2. Watchlist güncelle
+            close_coins = scan_results['close_to_crossover']
             
-            if not initial_list:
-                logger.error("Başlangıç coin listesi boş!")
-                return
+            # Top N coini seç (mesafeye göre sıralı)
+            new_watchlist = set()
             
-            logger.info(f"📊 Toplam {len(initial_list)} coin listeye alındı")
+            # Min watchlist için en yakın coinleri ekle
+            for coin in close_coins[:min_watchlist]:
+                new_watchlist.add(coin['symbol'])
             
-            # Pre-Screening Filtresi
-            min_volume = getattr(config, 'PRE_SCREEN_MIN_VOLUME_USD', 5_000_000)
-            min_price_change = getattr(config, 'PRE_SCREEN_MIN_PRICE_CHANGE_PERCENT', 1.5)
-            filter_mode = getattr(config, 'PRE_SCREEN_FILTER_MODE', 'OR')
+            # Kalan slotlar için (max_watchlist'e kadar)
+            remaining_slots = max_watchlist - len(new_watchlist)
+            for coin in close_coins[min_watchlist:min_watchlist + remaining_slots]:
+                new_watchlist.add(coin['symbol'])
             
-            logger.info(f"Pre-screening başlıyor: {len(initial_list)} coin → Minimum Hacim: ${min_volume:,.0f}, Minimum Değişim: %{min_price_change}, Mod: {filter_mode}")
+            # 3. WebSocket'ten çıkarılacaklar (artık yakın değiller)
+            to_remove = current_watchlist - new_watchlist
+            for symbol in to_remove:
+                try:
+                    logger.info(f"   ➖ Watchlist'ten çıkarılıyor: {symbol}")
+                    websocket_manager.unsubscribe_symbol(symbol)
+                    ema_manager.remove_symbol(symbol)
+                except Exception as e:
+                    logger.debug(f"Unsubscribe hatası [{symbol}]: {e}")
             
-            all_tickers = binance_fetcher.get_all_24h_ticker_data()
-            scan_list = []
+            # 4. WebSocket'e eklenecekler (yeni yakın coinler)
+            to_add = new_watchlist - current_watchlist
             
-            if all_tickers:
-                ticker_dict = {t['symbol']: t for t in all_tickers}
-                
-                for symbol in initial_list:
-                    ticker = ticker_dict.get(symbol)
-                    if not ticker:
-                        logger.debug(f"   {symbol}: 24h ticker verisi yok, atlıyor.")
-                        continue
-                    
+            # WebSocket aktif ise subscribe et
+            if websocket_started and to_add:
+                for symbol in to_add:
                     try:
-                        volume_usd = float(ticker.get('quoteVolume', 0))
-                        price_change_pct = abs(float(ticker.get('priceChangePercent', 0)))
+                        logger.info(f"   ➕ Watchlist'e ekleniyor: {symbol}")
                         
-                        volume_ok = volume_usd >= min_volume
-                        price_change_ok = price_change_pct >= min_price_change
-                        
-                        if filter_mode.upper() == 'OR':
-                            passed = volume_ok or price_change_ok
-                        else:
-                            passed = volume_ok and price_change_ok
-                        
-                        if passed:
-                            scan_list.append(symbol)
-                            reason = []
-                            if volume_ok: reason.append(f"${volume_usd:,.0f} hacim")
-                            if price_change_ok: reason.append(f"%{price_change_pct:.2f} değişim")
-                            logger.debug(f"   ✅ {symbol}: {' + '.join(reason)} → Geçti")
-                        else:
-                            logger.debug(f"   ❌ {symbol}: ${volume_usd:,.0f} hacim, %{price_change_pct:.2f} değişim → Filtrelendi")
-                    except (ValueError, TypeError) as e:
-                        logger.warning(f"   {symbol}: Ticker verisi parse edilemedi: {e}")
-                        continue
-                
-                logger.info(f"✅ Pre-screening tamamlandı: {len(initial_list)} → {len(scan_list)} aktif coin taranacak")
-            else:
-                logger.warning("⚠️ 24h ticker verisi alınamadı, filtreleme atlanıyor, tüm liste kullanılacak.")
-                scan_list = initial_list
-            
-            if not scan_list:
-                logger.warning("Pre-screening sonrası hiç coin kalmadı! Tarama yapılmayacak.")
-                return
-
-            # --- Two-Stage Pipeline: Stage-1 (hafif) aday kısıtlaması ---
-            if getattr(config, 'ENABLE_TWO_STAGE_PIPELINE', False) and all_tickers:
-                try:
-                    stage1_min_vol_ratio = getattr(config, 'STAGE1_MIN_VOL_RATIO', 1.05)
-                    stage1_min_momentum = getattr(config, 'STAGE1_MIN_MOMENTUM_SCORE', 0.4)
-                    stage1_max = getattr(config, 'STAGE1_MAX_CANDIDATES', 25)
-
-                    # Basit momentum skoru: normalize edilmiş fiyat değişimi + hacim oranı katkısı
-                    # Hacim oranı ~ (24h quoteVolume / min_volume)
-                    stage1_scores = []
-                    for sym in scan_list:
-                        t = ticker_dict.get(sym)
-                        if not t:
-                            continue
-                        try:
-                            price_change_pct = abs(float(t.get('priceChangePercent', 0.0)))
-                            volume_usd = float(t.get('quoteVolume', 0.0))
-                            vol_ratio = volume_usd / max(min_volume, 1.0)
-                            momentum_score = (price_change_pct / 10.0) * 0.6 + min(vol_ratio, 3.0) * 0.4
-                            if vol_ratio >= stage1_min_vol_ratio and momentum_score >= stage1_min_momentum:
-                                stage1_scores.append((sym, momentum_score, vol_ratio, price_change_pct))
-                        except Exception:
-                            continue
-
-                    # Skora göre sırala ve limitle
-                    stage1_scores.sort(key=lambda x: (-x[1], -x[3]))
-                    limited = stage1_scores[:stage1_max]
-                    new_scan_list = [s[0] for s in limited]
-
-                    logger.info(f"🪄 Stage-1 Pipeline: {len(scan_list)} → {len(new_scan_list)} adaya indirildi (max={stage1_max})")
-                    logger.debug(f"Stage-1 Top Adaylar: {limited[:5]}")
-                    scan_list = new_scan_list if new_scan_list else scan_list
-                except Exception as stage1_err:
-                    logger.warning(f"Stage-1 pipeline uygulanamadı: {stage1_err}")
-                
-        except Exception as e:
-            logger.error(f"Coin listesi/pre-screening hatası: {e}", exc_info=True)
-            return
-
-        # --- Adım 3: Alfa Verilerini Güncelle ---
-        logger.info("--- Adım 3: Alfa Verileri (Duygu ve Korelasyon) Güncelleme ---")
-        try:
-            cache_updated = sentiment_analyzer.update_sentiment_cache(config)
-            if cache_updated:
-                logger.info("Alfa cache (duygu/korelasyon) güncellendi ve DB'ye kaydedildi.")
-            else:
-                logger.info("Alfa/Duygu verileri güncel, güncelleme atlandı.")
-        except Exception as e:
-            logger.error(f"Alfa/Duygu verileri güncellenirken hata: {e}", exc_info=True)
-
-        # --- YENİ: Korelasyon Matrisini Yükle (Adım 4'ten önce) ---
-        correlation_record = None
-        try:
-            with get_db_session() as db_corr:
-                corr_key = getattr(sentiment_analyzer, 'CORRELATION_MATRIX_KEY', 'correlation_matrix')
-                corr_cache = db_corr.query(AlphaCache).filter(AlphaCache.key == corr_key).first()
-                if corr_cache and corr_cache.value:
-                    correlation_record = corr_cache.value
-                    logger.info("✅ Korelasyon Matrisi yüklendi (rejim seçimi için)")
-                else:
-                    logger.warning("⚠️ Korelasyon Matrisi bulunamadı, tüm coinler kendi rejimini kullanacak")
-        except Exception as e:
-            logger.error(f"Korelasyon matrisi yüklenemedi: {e}", exc_info=True)
-        
-    # --- Adım 4: Coin Analizi ve Aday Sinyal Toplama ---
-        logger.info(f"--- Adım 4: {len(scan_list)} Coin Analiz Ediliyor (Dinamik Rejim) ---")
-
-        # --- Adım 4: Coin Analizi ve Aday Sinyal Toplama ---
-        logger.info(f"--- Adım 4: {len(scan_list)} Coin Analiz Ediliyor (Dinamik Rejim) ---")
-        candidate_signals = []
-        scan_delay = getattr(config, 'SCAN_DELAY_SECONDS', 0.5)
-        scalp_tf = getattr(config, 'SCALP_TIMEFRAME', '15m')
-
-        for i, symbol in enumerate(scan_list):
-            if stop_event.is_set():
-                logger.info("Kapanış sinyali alındı, tarama durduruluyor...")
-                break
-            
-            logger.info(f"--- [{i+1}/{len(scan_list)}] {symbol} Analiz Başladı ---")
-            current_delay = scan_delay * rate_limit_status['binance_delay_multiplier']
-            time.sleep(current_delay)
-
-            try:
-                # Gerekli tüm zaman dilimi verilerini çek
-                df_1d = binance_fetcher.get_binance_klines(symbol=symbol, interval='1d', limit=300)
-                df_4h = binance_fetcher.get_binance_klines(symbol=symbol, interval='4h', limit=300)
-                df_1h = binance_fetcher.get_binance_klines(symbol=symbol, interval='1h', limit=300)
-                
-                df_scalp = None
-                if scalp_tf not in ['1h', '4h', '1d']:
-                    df_scalp = binance_fetcher.get_binance_klines(symbol=symbol, interval=scalp_tf, limit=100)
-
-                if df_1d is None or df_4h is None or df_1h is None:
-                    logger.warning(f"{symbol}: Gerekli TFs çekilemedi, atlanıyor.")
-                    continue
-                
-                # Göstergeleri hesapla
-                df_1d = indicators.calculate_indicators(df_1d.copy())
-                df_4h = indicators.calculate_indicators(df_4h.copy())
-                df_1h = indicators.calculate_indicators(df_1h.copy())
-                
-                # Scalp DataFrame referansını güncelle
-                if scalp_tf == '1h':
-                    df_scalp = df_1h
-                elif scalp_tf == '4h':
-                    df_scalp = df_4h
-                elif scalp_tf == '1d':
-                    df_scalp = df_1d
-                else:
-                    df_scalp = indicators.calculate_indicators(df_scalp.copy())
-
-                # Dinamik Strateji Seçimi (v7.0: KORELASYON BAZLI)
-                coin_specific_strategy = 'STOP'
-                try:
-                    # Korelasyon matrisini kontrol et (dış scope'dan gelen correlation_record)
-                    btc_corr = get_btc_correlation(symbol, correlation_record)
-                    correlation_threshold = getattr(config, 'BTC_CORRELATION_THRESHOLD', 0.7)
-                    
-                    if btc_corr >= correlation_threshold:
-                        # YÜKSEK KORELASYON: BTC'nin rejimini kullan
-                        coin_specific_strategy = global_btc_regime
-                        logger.info(f"   {symbol} → BTC rejimi kullanılıyor (Korelasyon: {btc_corr:.2f})")
-                    else:
-                        # DÜŞÜK KORELASYON: Kendi verisiyle rejim belirle
-                        if not df_1d.empty and 'adx14' in df_1d.columns and not pd.isna(df_1d['adx14'].iloc[-1]):
-                            coin_specific_strategy = strategies.determine_regime(df_1d, df_4h)
-                            logger.info(f"   {symbol} → Kendi rejimi: {coin_specific_strategy} (Korelasyon: {btc_corr:.2f})")
-                        else:
-                            # 1D veri yoksa 4H'den dene
-                            logger.warning(f"{symbol} için 1D verisi yetersiz, 4H'den rejim belirleniyor...")
-                            coin_specific_strategy = strategies.determine_regime(df_4h, None)
-                    
-                except Exception as e:
-                    logger.error(f"{symbol} için rejim belirlenirken hata: {e}")
-                    continue
-
-                # NaN Kontrolü + Tolerans
-                data_valid = True
-                nan_reason = []
-                nan_penalty_count = 0
-                tol_enabled = getattr(config, 'NAN_TOLERANCE_ENABLED', False)
-                max_nan_allowed = getattr(config, 'MAX_NAN_INDICATORS_ALLOWED', 0)
-                required_cols = getattr(config, 'STRATEGY_REQUIRED_INDICATORS', {}).get(coin_specific_strategy, {})
-                dfs = {'1d': df_1d, '4h': df_4h, '1h': df_1h, scalp_tf: df_scalp}
-                
-                for tf_name, df in dfs.items():
-                    if tf_name not in required_cols:
-                        continue
-                    if df is None or df.empty or len(df) < 2:
-                        data_valid = False
-                        nan_reason.append(f"{tf_name} yetersiz veri")
-                        continue
-                    
-                    last_row = df.iloc[-1]
-                    cols_to_check = required_cols.get(tf_name, [])
-                    missing = [c for c in cols_to_check if c not in df.columns]
-                    nans = [c for c in cols_to_check if c in last_row and pd.isna(last_row[c])]
-                    
-                    if missing or nans:
-                        issue_count = len(missing) + len(nans)
-                        if tol_enabled and issue_count > 0:
-                            nan_penalty_count += issue_count
-                            nan_reason.append(f"{tf_name} tolerans: eksik={len(missing)}, NaN={len(nans)}")
-                        else:
-                            data_valid = False
-                            if missing:
-                                nan_reason.append(f"{tf_name} eksik: {','.join(missing)}")
-                            if nans:
-                                nan_reason.append(f"{tf_name} NaN: {','.join(nans)}")
-                
-                if tol_enabled and data_valid:
-                    if nan_penalty_count > max_nan_allowed:
-                        data_valid = False
-                        nan_reason.append(f"Toplam eksik/NaN {nan_penalty_count} > izin verilen {max_nan_allowed}")
-
-                if not data_valid:
-                    logger.warning(f"{symbol}: Veri kontrolü başarısız ({coin_specific_strategy}): {'; '.join(nan_reason)}")
-                    continue
-
-                # Stratejiyi Uygula
-                technical_signal = None
-                try:
-                    if coin_specific_strategy == 'PULLBACK':
-                        technical_signal = strategies.find_pullback_signal(df_1d, df_4h, df_1h, config)
-                    elif coin_specific_strategy == 'MEAN_REVERSION':
-                        # v9.0: 1D eklendi
-                        technical_signal = strategies.find_mean_reversion_signal(df_1d, df_4h, df_1h, config)
-                    elif coin_specific_strategy == 'BREAKOUT':
-                        # v9.0: 1D ve 4H eklendi
-                        technical_signal = strategies.find_breakout_signal(df_1d, df_4h, df_1h, config)
-                    elif coin_specific_strategy == 'ADVANCED_SCALP':
-                        # v9.0: 1D, 4H, 1H eklendi
-                        technical_signal = strategies.find_advanced_scalp_signal(df_1d, df_4h, df_1h, df_scalp, config)
-                except Exception as e:
-                    logger.error(f"{symbol} strateji hatası: {e}", exc_info=True)
-
-                if technical_signal:
-                    signal_strength = technical_signal.get('signal_strength', 50.0)  # Default: 50
-                    logger.info(f"✅ {symbol}: Teknik {coin_specific_strategy} {technical_signal['direction']} sinyali bulundu (Güç: {signal_strength:.1f}/100).")
-                    
-                    # SL/TP hesaplama için doğru DataFrame seç
-                    df_levels = None
-                    current_price = 0.0
-                    current_atr = 0.0
-                    
-                    if coin_specific_strategy in ['ADVANCED_SCALP', 'BREAKOUT']:
-                        df_levels = df_1h
-                        current_price = df_1h.iloc[-1]['close']
-                        current_atr = df_1h.iloc[-1]['atr14']
-                    elif coin_specific_strategy == 'MEAN_REVERSION':
-                        df_levels = df_4h
-                        current_price = df_4h.iloc[-1]['close']
-                        current_atr = df_4h.iloc[-1]['atr14']
-                    elif coin_specific_strategy == 'PULLBACK':
-                        df_levels = df_1h
-                        current_price = df_1h.iloc[-1]['close']
-                        current_atr = df_1h.iloc[-1]['atr14']
-                    
-                    if df_levels is None or pd.isna(current_price) or current_price <= 0 or pd.isna(current_atr) or current_atr <= 0:
-                        logger.warning(f"   {symbol}: Geçersiz fiyat/ATR (Fiyat: {current_price}, ATR: {current_atr}), SL/TP hesaplanamıyor.")
-                        continue
-
-                    signal_direction = technical_signal['direction']
-                    
-                    # v9.2 SMART SL/TP hesaplama
-                    sl_tp_method = getattr(config, 'SL_TP_METHOD', 'SMART')
-                    partial_tp_1_price = None
-                    
-                    if sl_tp_method == 'SMART':
-                        # YENİ: Hibrit sistem (ATR + Fibonacci + Swing Levels)
-                        from src.risk_manager.smart_sl_tp import calculate_smart_sl_tp
-                        sl_tp = calculate_smart_sl_tp(current_price, signal_direction, df_levels, config, current_atr)
-                        
-                        # Fallback: SMART başarısız olursa ATR kullan
-                        if sl_tp is None:
-                            logger.warning(f"   {symbol}: SMART sistem başarısız, ATR'ye düşülüyor")
-                            sl_tp = risk_calculator.calculate_dynamic_sl_tp(current_price, current_atr, signal_direction, config, strategy=coin_specific_strategy)
-                    
-                    elif sl_tp_method == 'PERCENTAGE':
-                        # Yüzde bazlı (volatilite uyumlu - v9.3)
-                        sl_tp = risk_calculator.calculate_percentage_sl_tp(current_price, signal_direction, config, current_atr)
-                    
-                    elif sl_tp_method == 'ATR':
-                        # ATR bazlı (volatilite uyumlu)
-                        sl_tp = risk_calculator.calculate_dynamic_sl_tp(current_price, current_atr, signal_direction, config, strategy=coin_specific_strategy)
-                    
-                    else:
-                        # Varsayılan: SMART
-                        logger.warning(f"   Bilinmeyen SL_TP_METHOD: {sl_tp_method}, SMART kullanılıyor")
-                        from src.risk_manager.smart_sl_tp import calculate_smart_sl_tp
-                        sl_tp = calculate_smart_sl_tp(current_price, signal_direction, df_levels, config, current_atr)
-                    
-                    if sl_tp:
-                        sl_price = sl_tp['sl_price']
-                        tp_price = sl_tp['tp_price']
-                        partial_tp_1_price = sl_tp.get('partial_tp_1_price')
-                        
-                        min_rr_base = getattr(config, 'MIN_RR_RATIO', 2.0)
-                        rr = risk_calculator.calculate_rr(current_price, sl_price, tp_price, signal_direction)
-
-                        # Rejim adaptif R:R eşiği
-                        effective_min_rr = min_rr_base
-                        try:
-                            if getattr(config, 'ADAPTIVE_THRESHOLDS_ENABLED', False):
-                                rr_by_regime = getattr(config, 'RR_THRESHOLDS_BY_REGIME', {})
-                                regime_rr = rr_by_regime.get(coin_specific_strategy, min_rr_base)
-                                effective_min_rr = max(min_rr_base, regime_rr)
-                        except Exception:
-                            effective_min_rr = min_rr_base
-                        
-                        if rr is not None and rr >= effective_min_rr:
-                            logger.info(f"   PASSED R:R Check! ({rr:.2f} >= {effective_min_rr})")
-                            
-                            # Kalite notu hesaplama
-                            quality_grade = 'C'
-                            fng_score = 'N/A'
-                            news_score = 'N/A'
-                            news_score_val = None
-                            sentiment_scores = None
-                            
-                            try:
-                                quality_grade = alpha_analyzer.calculate_quality_grade(symbol, config, signal_direction)
-                                sentiment_scores = sentiment_analyzer.get_sentiment_scores(symbol, config)
-                                fng_score = sentiment_scores.get('fng_index', 'N/A')
-                                news_score_val = sentiment_scores.get('news_sentiment')
-                                news_score = f"{news_score_val:.3f}" if news_score_val is not None else 'N/A'
-                                logger.info(f"   Hesaplanan Kalite Notu: {quality_grade}")
-                            except Exception as e:
-                                logger.error(f"   Kalite notu hatası: {e}", exc_info=True)
-                                quality_grade = 'C'
-                                fng_score = 'HATA'
-                                news_score = 'HATA'
-                            
-                            logger.info(f"   Alfa Detayları: F&G={fng_score}, Haber={news_score} -> Kalite={quality_grade}")
-                            
-                            # ATR değerini signal'a ekle
-                            atr_value = None
-                            if 'atr14' in df_1h.columns and not pd.isna(df_1h.iloc[-1]['atr14']):
-                                atr_value = df_1h.iloc[-1]['atr14']
-
-                            candidate_signals.append({
-                                'symbol': symbol,
-                                'strategy': coin_specific_strategy,
-                                'direction': signal_direction,
-                                'entry_price': current_price,
-                                'sl_price': sl_price,
-                                'tp_price': tp_price,
-                                'partial_tp_1_price': partial_tp_1_price,  # YENİ: Partial TP fiyatı
-                                'rr_ratio': rr,
-                                'quality_grade': quality_grade,
-                                'signal_strength': signal_strength,  # 🆕 v9.3: Sinyal gücü
-                                'atr': atr_value,
-                                'fng_index_at_signal': fng_score if isinstance(fng_score, int) else None,
-                                'news_sentiment_at_signal': news_score_val,
-                                'reddit_sentiment_at_signal': sentiment_scores.get('reddit_sentiment') if sentiment_scores else None,
-                                'google_trends_score_at_signal': sentiment_scores.get('google_trends_score') if sentiment_scores else None,
-                                'rr_tier': 'PRIMARY',
-                                'nan_penalty_count': nan_penalty_count
-                            })
-                        elif rr is None:
-                            logger.warning(f"   {symbol}: R:R hesaplanamadı (Dinamik SL/TP ile).")
-                        else:
-                            # Secondary tier kontrolü
-                            min_rr_secondary = getattr(config, 'MIN_RR_SECONDARY', None)
-                            if min_rr_secondary is not None and rr >= float(min_rr_secondary):
-                                logger.info(f"   Secondary Tier: R:R {rr:.2f} ikincil eşik {min_rr_secondary} üzerinde")
-                                # Kalite ve sentiment yine hesaplanır
-                                quality_grade = 'C'
-                                fng_score = 'N/A'
-                                news_score = 'N/A'
-                                news_score_val = None
-                                sentiment_scores = None
-                                try:
-                                    quality_grade = alpha_analyzer.calculate_quality_grade(symbol, config, signal_direction)
-                                    sentiment_scores = sentiment_analyzer.get_sentiment_scores(symbol, config)
-                                    fng_score = sentiment_scores.get('fng_index', 'N/A')
-                                    news_score_val = sentiment_scores.get('news_sentiment')
-                                    news_score = f"{news_score_val:.3f}" if news_score_val is not None else 'N/A'
-                                except Exception:
-                                    pass
-
-                                candidate_signals.append({
-                                    'symbol': symbol,
-                                    'strategy': coin_specific_strategy,
-                                    'direction': signal_direction,
-                                    'entry_price': current_price,
-                                    'sl_price': sl_price,
-                                    'tp_price': tp_price,
-                                    'partial_tp_1_price': partial_tp_1_price,
-                                    'rr_ratio': rr,
-                                    'quality_grade': quality_grade,
-                                    'signal_strength': signal_strength,
-                                    'atr': atr_value,
-                                    'fng_index_at_signal': fng_score if isinstance(fng_score, int) else None,
-                                    'news_sentiment_at_signal': news_score_val,
-                                    'reddit_sentiment_at_signal': sentiment_scores.get('reddit_sentiment') if sentiment_scores else None,
-                                    'google_trends_score_at_signal': sentiment_scores.get('google_trends_score') if sentiment_scores else None,
-                                    'rr_tier': 'SECONDARY',
-                                    'nan_penalty_count': nan_penalty_count
-                                })
-                            else:
-                                logger.info(f"   REJECTED: R:R düşük ({rr:.2f} < {effective_min_rr}).")
-                    else:
-                        logger.warning(f"   {symbol}: Dinamik SL/TP hesaplanamadı.")
-
-            except BinanceAPIException as e:
-                if e.code == -1003 or e.status_code == 429 or e.status_code == 418:
-                    adjust_rate_limit(increase=True)
-                else:
-                    logger.error(f"❌ Binance API hatası ({symbol}): {e.code} - {e.message}")
-            except Exception as e:
-                logger.error(f"❌ Analiz hatası ({symbol}): {e}", exc_info=True)
-
-        # --- Adım 5: Aday Sinyalleri İşle ---
-        logger.info(f"--- Adım 5: {len(candidate_signals)} Aday Sinyal İşleniyor ---")
-        final_signals_to_open = []
-        
-        if candidate_signals:
-            # 🆕 v9.3: Signal strength'e göre sıralama (önce kalite, sonra signal_strength, sonra RR)
-            quality_map = {'A': 1, 'B': 2, 'C': 3, 'D': 4}
-            candidate_signals.sort(key=lambda s: (
-                quality_map.get(s.get('quality_grade', 'D'), 5),  # Önce kalite
-                -s.get('signal_strength', 0),  # Sonra sinyal gücü (yüksek = iyi)
-                -s.get('rr_ratio', 0)  # Son olarak RR
-            ))
-            
-            top_signal = candidate_signals[0]
-            logger.info(f"🏆 EN İYİ SİNYAL: {top_signal['symbol']} {top_signal['strategy']} "
-                       f"Grade:{top_signal['quality_grade']} Strength:{top_signal.get('signal_strength', 0):.1f} "
-                       f"RR:{top_signal['rr_ratio']:.2f}")
-            
-            max_open = getattr(config, 'MAX_OPEN_POSITIONS', 10)
-            base_risk = getattr(config, 'BASE_RISK_PERCENT', 1.0)
-            q_multipliers = getattr(config, 'QUALITY_MULTIPLIERS', {'A': 1.25, 'B': 1.0, 'C': 0.6, 'D': 0.1})
-            secondary_multiplier = getattr(config, 'SECONDARY_RISK_MULTIPLIER', 0.55)
-            enable_micro_low = getattr(config, 'ENABLE_MICRO_RISK_LOW_GRADES', True)
-            
-            # Gerçek bakiyeyi kullan
-            use_real_balance = getattr(config, 'USE_REAL_BALANCE', True)
-            if use_real_balance and executor:
-                portfolio_usd = executor.get_futures_account_balance()
-                if portfolio_usd <= 0:
-                    logger.warning("⚠️ Gerçek bakiye alınamadı, sanal portföy kullanılıyor")
-                    portfolio_usd = getattr(config, 'VIRTUAL_PORTFOLIO_USD', 1000)
-                else:
-                    logger.info(f"💰 Gerçek Bakiye: ${portfolio_usd:.2f} USDT")
-            else:
-                portfolio_usd = getattr(config, 'VIRTUAL_PORTFOLIO_USD', 1000)
-                logger.info(f"💰 Sanal Portföy: ${portfolio_usd:.2f} USDT")
-            
-            corr_groups_map = getattr(config, 'CORRELATION_GROUPS', {})
-            max_pos_per_symbol = getattr(config, 'MAX_POSITIONS_PER_SYMBOL', 1)
-            max_correlation_allowed = getattr(config, 'MAX_CORRELATION_ALLOWED', 0.7)
-            
-            # Context manager ile DB işlemleri
-            with get_db_session() as db:
-                # Korelasyon matrisini yükle
-                correlation_matrix = None
-                corr_key = getattr(sentiment_analyzer, 'CORRELATION_MATRIX_KEY', 'correlation_matrix')
-                corr_record = db.query(AlphaCache.value).filter(AlphaCache.key == corr_key).first()
-                if corr_record and corr_record[0]:
-                    correlation_matrix = corr_record[0]
-                    logger.info("Korelasyon Matrisi başarıyla DB'den yüklendi.")
-                else:
-                    logger.warning("Korelasyon Matrisi DB'de bulunamadı. Korelasyon filtresi atlanacak.")
-                
-                # 🆕 v7.1: Margin Tracker başlat
-                margin_tracker = create_margin_tracker(config)
-                margin_status = margin_tracker.calculate_total_margin_usage(db)
-                
-                # Margin durumunu logla
-                logger.info("=" * 60)
-                logger.info(f"💰 Margin Durumu: {margin_status['health_status']}")
-                logger.info(f"   Kullanılan: ${margin_status['total_margin_used']:.2f}/{portfolio_usd:.2f} ({margin_status['usage_percent']:.1%})")
-                logger.info(f"   Serbest: ${margin_status['available_margin']:.2f}")
-                logger.info(f"   Açık Pozisyon: {margin_status['position_count']} adet")
-                logger.info("=" * 60)
-                
-                # Kritik margin durumunda uyarı
-                if margin_status['health_status'] in ['CRITICAL', 'DANGER']:
-                    logger.warning(f"⚠️ UYARI: Margin {margin_status['health_status']} seviyede! Yeni pozisyon sınırlandırılabilir.")
-
-                with open_positions_lock:
-                    logger.debug("Pozisyon kilidi alındı (Adım 5). DB sorgulanıyor...")
-                    current_open_positions_db = db.query(OpenPosition).all()
-                    current_open_count = len(current_open_positions_db)
-                    
-                    # Mevcut pozisyon bilgilerini topla
-                    group_risks = {}
-                    symbol_counts = {}
-                    open_symbols_set = set()
-                    
-                    for pos in current_open_positions_db:
-                        group = pos.correlation_group or 'OTHER'
-                        risk_perc = pos.planned_risk_percent or (base_risk * q_multipliers.get(pos.quality_grade, 0.5))
-                        group_risks[group] = group_risks.get(group, 0.0) + risk_perc
-                        symbol_counts[pos.symbol] = symbol_counts.get(pos.symbol, 0) + 1
-                        open_symbols_set.add(pos.symbol)
-                    
-                    logger.debug(f"Filtreleme öncesi (DB): Açık={current_open_count}, Grup Risk={group_risks}, Sembol Sayıları={symbol_counts}")
-
-                    # Sinyal işleme döngüsü
-                    for signal in candidate_signals:
-                        symbol = signal['symbol']
-                        quality_grade = signal['quality_grade']
-                        rr_tier = signal.get('rr_tier', 'PRIMARY')
-                        
-                        # Grup ataması
-                        if symbol in corr_groups_map:
-                            signal_group = corr_groups_map[symbol]
-                        else:
-                            signal_group = config.auto_assign_correlation_group(symbol)
-                            logger.debug(f"   {symbol}: Otomatik grup atandı → {signal_group}")
-                        
-                        risk_multiplier = q_multipliers.get(quality_grade, 0.0)
-                        if rr_tier == 'SECONDARY':
-                            risk_multiplier *= secondary_multiplier
-                        # Mikro risk kapalıysa C ve D azalt
-                        if not enable_micro_low and quality_grade in ['C', 'D']:
-                            logger.debug(f"   SKIP {symbol}: Mikro risk kapalı ve kalite {quality_grade}")
-                            continue
-                        
-                        if risk_multiplier <= 0:
-                            logger.debug(f"   SKIP {symbol}: Kalite yetersiz ({quality_grade}).")
-                            continue
-                        if current_open_count >= max_open:
-                            logger.warning(f"Maksimum açık pozisyon limitine ({max_open}) ulaşıldı.")
-                            break
-                        if symbol_counts.get(symbol, 0) >= max_pos_per_symbol:
-                            logger.info(f"   SKIP {symbol}: Sembol başına max pozisyon ({max_pos_per_symbol}) limitine ulaşıldı.")
-                            continue
-                        
-                        planned_risk_percent = base_risk * risk_multiplier
-
-                        # Probabilistic sizing (sinyal gücü + kalite etkisi)
-                        if getattr(config, 'ENABLE_PROBABILISTIC_SIZING', False):
-                            try:
-                                strength = signal.get('signal_strength', 50.0) / 100.0  # 0-1
-                                quality_factor = {'A': 1.0, 'B': 0.8, 'C': 0.55, 'D': 0.3}.get(quality_grade, 0.5)
-                                probability_score = min(1.0, max(0.0, (strength * 0.6 + quality_factor * 0.4)))
-                                prob_min = getattr(config, 'PROB_SIZING_MIN', 0.45)
-                                prob_max = getattr(config, 'PROB_SIZING_MAX', 1.1)
-                                prob_scale = prob_min + (prob_max - prob_min) * probability_score
-                                planned_risk_percent *= prob_scale
-                                signal['probability_score'] = probability_score
-                                signal['prob_scaled'] = prob_scale
-                                logger.debug(f"   ProbSizing {symbol}: score={probability_score:.2f} scale={prob_scale:.2f} risk%={planned_risk_percent:.2f}")
-                            except Exception as ps_err:
-                                logger.warning(f"   Prob sizing hata: {ps_err}")
-                        
-                        # 🆕 GRUP RİSK KONTROLÜ
-                        max_group_risk = getattr(config, 'MAX_RISK_PER_GROUP', 5.0)
-                        current_group_risk = group_risks.get(signal_group, 0.0)
-                        
-                        if current_group_risk + planned_risk_percent > max_group_risk:
-                            logger.warning(f"   SKIP {symbol}: Grup '{signal_group}' risk limiti aşılacak! "
-                                          f"(Mevcut: {current_group_risk:.2f}% + Yeni: {planned_risk_percent:.2f}% > Max: {max_group_risk:.2f}%)")
-                            continue
-                        
-                        # Korelasyon kontrolü
-                        is_highly_correlated = False
-                        if correlation_matrix and open_symbols_set:
-                            for open_symbol in open_symbols_set:
-                                if open_symbol == symbol:
-                                    continue
-                                try:
-                                    corr_value = correlation_matrix.get(symbol, {}).get(open_symbol, 0.0)
-                                    if abs(corr_value) > max_correlation_allowed:
-                                        is_highly_correlated = True
-                                        logger.warning(f"   SKIP {symbol}: {open_symbol} ile Yüksek Korelasyon ({corr_value:.2f} > {max_correlation_allowed}).")
-                                        break
-                                except Exception as e_corr:
-                                    logger.error(f"   Korelasyon değeri okunurken hata ({symbol} vs {open_symbol}): {e_corr}")
-                        
-                        if is_highly_correlated:
-                            continue
-
-                        # Frequency throttle (ikincil tier ve düşük kaliteyi sınırlama)
-                        if getattr(config, 'ENABLE_FREQUENCY_THROTTLE', False):
-                            try:
-                                window_minutes = getattr(config, 'THROTTLE_WINDOW_MINUTES', 90)
-                                max_new = getattr(config, 'MAX_NEW_POSITIONS_PER_WINDOW', 4)
-                                now_ts = int(time.time())
-                                window_start = now_ts - window_minutes * 60
-
-                                recent_positions = [p for p in current_open_positions_db if p.open_time and p.open_time >= window_start]
-                                recent_count = len(recent_positions)
-                                if recent_count >= max_new and rr_tier == 'SECONDARY':
-                                    logger.info(f"   THROTTLE SKIP {symbol}: İkincil tier ve pencere dolu ({recent_count}/{max_new})")
-                                    continue
-                            except Exception as throttle_err:
-                                logger.warning(f"   Throttle kontrol hatası: {throttle_err}")
-                        
-                        # Position Sizing
-                        try:
-                            atr_value = signal.get('atr', 0.0)
-                            if atr_value <= 0:
-                                logger.warning(f"   {symbol}: ATR değeri bulunamadı, volatilite ayarlaması atlanıyor.")
-                                final_risk_usd = portfolio_usd * (planned_risk_percent / 100.0)
-                                risk_per_unit = abs(signal['entry_price'] - signal['sl_price'])
-                                pos_size = final_risk_usd / risk_per_unit if risk_per_unit > 0 else 0
-                                if pos_size <= 0:
-                                    raise ValueError("Boyut <= 0")
-                                sizing_result = {
-                                    'final_risk_usd': final_risk_usd,
-                                    'position_size_units': pos_size,
-                                    'volatility_multiplier': 1.0,
-                                    'volatility_score': 0.5,
-                                    'leverage': getattr(config, 'FUTURES_LEVERAGE', 2)
-                                }
-                            else:
-                                # 🔧 VOLATILITE BAZLI SIZING
-                                sizing_result = risk_calculator.calculate_position_size_with_volatility(
-                                    entry_price=signal['entry_price'],
-                                    sl_price=signal['sl_price'],
-                                    portfolio_usd=portfolio_usd,
-                                    planned_risk_percent=planned_risk_percent,
-                                    atr=atr_value,
-                                    config=config
-                                )
-                                if not sizing_result:
-                                    raise ValueError("Volatilite bazlı sizing başarısız")
-                                
-                                # 🆕 VOLATILITE MULTIPLIER UYGULA
-                                volatility_multiplier = sizing_result.get('volatility_multiplier', 1.0)
-                                volatility_score = sizing_result.get('volatility_score', 0.5)
-                                
-                                # Yüksek volatilitede riski azalt
-                                if volatility_score > 0.7:  # Yüksek volatilite
-                                    adjusted_risk_percent = planned_risk_percent * volatility_multiplier  # multiplier < 1.0 (örn: 0.7)
-                                    logger.warning(f"   ⚠️ {symbol} Yüksek Volatilite! Risk %{planned_risk_percent:.2f} → %{adjusted_risk_percent:.2f} (Skor: {volatility_score:.2f}, Çarpan: {volatility_multiplier:.2f})")
-                                    
-                                    # Risk'i yeniden hesapla
-                                    final_risk_usd = portfolio_usd * (adjusted_risk_percent / 100.0)
-                                    risk_per_unit = abs(signal['entry_price'] - signal['sl_price'])
-                                    adjusted_pos_size = final_risk_usd / risk_per_unit if risk_per_unit > 0 else 0
-                                    
-                                    # Sizing result'ı güncelle
-                                    sizing_result['final_risk_usd'] = final_risk_usd
-                                    sizing_result['position_size_units'] = adjusted_pos_size
-                                    sizing_result['adjusted_risk_percent'] = adjusted_risk_percent
-                                    
-                                    logger.info(f"      Pozisyon boyutu: {sizing_result['position_size_units']:.6f} {symbol} (~${final_risk_usd / (adjusted_risk_percent/100.0) * (adjusted_risk_percent/100.0):.2f})")
-                                else:
-                                    logger.info(f"   ✅ {symbol} Normal Volatilite (Skor: {volatility_score:.2f}), risk ayarlaması yok")
-                        
-                        except Exception as e:
-                            logger.error(f"   SKIP {symbol}: Boyut hesaplama hatası: {e}")
-                            continue
-                        
-                        # Partial TP ayarları
-                        partial_tp_1_percent = None
-                        partial_tp_1_price = signal.get('partial_tp_1_price')
-                        
-                        if getattr(config, 'PARTIAL_TP_ENABLED', False):
-                            partial_tp_1_percent = getattr(config, 'PARTIAL_TP_1_PERCENT', 50.0)
-                            
-                            if partial_tp_1_price is None:
-                                partial_tp_1_rr = getattr(config, 'PARTIAL_TP_1_RR_RATIO', 1.5)
-                                entry = signal['entry_price']
-                                sl = signal['sl_price']
-                                risk_distance = abs(entry - sl)
-                                reward_distance_partial = risk_distance * partial_tp_1_rr
-                                
-                                if signal['direction'] == 'LONG':
-                                    partial_tp_1_price = entry + reward_distance_partial
-                                else:
-                                    partial_tp_1_price = entry - reward_distance_partial
-                            
-                            logger.info(f"   📊 Partial TP-1: {partial_tp_1_percent:.0f}% pozisyon @ {partial_tp_1_price:.6f}")
-                        
-                        # Trailing Stop ayarları
-                        is_trailing_active = False
-                        trailing_distance = None
-                        high_water_mark = signal['entry_price']
-
-                        if signal['strategy'] in ['ADVANCED_SCALP', 'BREAKOUT']:
-                            is_trailing_active = True
-                            trailing_distance = abs(signal['entry_price'] - signal['sl_price'])
-                            logger.info(f"   TRAILING STOP AKTİF! Strateji: {signal['strategy']}, Mesafe: {trailing_distance:.4f}")
-                        
-                        # 🆕 KELLY CRITERION KONTROLÜ
-                        kelly_size = None
-                        kelly_percent = None
-                        kelly_confidence = None
-                        kelly_reasoning = ''
-                        
-                        try:
-                            from src.risk_manager.kelly_calculator import KellyPositionSizer
-                            
-                            kelly_sizer = KellyPositionSizer(config, db)  # 🔧 db parametresi eklendi
-                            
-                            # Strateji bazlı win rate (gerçek performanstan alınmalı, şimdilik varsayılan)
-                            estimated_win_rate = 0.60  # %60 başarı oranı varsayımı
-                            
-                            kelly_result = kelly_sizer.calculate_kelly_size(
-                                win_rate=estimated_win_rate,
-                                avg_win_loss_ratio=signal['rr_ratio'],  # 🔧 Düzeltildi
-                                rr_ratio=signal['rr_ratio'],
-                                max_position_value=portfolio_usd  # 🔧 Düzeltildi
-                            )
-                            
-                            if kelly_result and kelly_result.get('recommended_size', 0) > 0:
-                                kelly_size = kelly_result['recommended_size']
-                                kelly_percent = kelly_result.get('kelly_percent', 0.0)
-                                kelly_confidence = kelly_result.get('confidence')
-                                kelly_reasoning = kelly_result.get('risk_reasoning', '')
-                                
-                                current_position_value = sizing_result['position_size_units'] * signal['entry_price']
-                                
-                                # Kelly ile karşılaştır
-                                if current_position_value > kelly_size * 1.5:  # %50 fazla
-                                    logger.warning(f"   ⚠️ Kelly Uyarısı: Pozisyon Kelly önerisinden büyük! "
-                                                  f"${current_position_value:.2f} > ${kelly_size:.2f} (Kelly)")
-                                    
-                                    # Opsiyonel: Kelly'e göre ayarla
-                                    if getattr(config, 'USE_KELLY_ADJUSTMENT', False):
-                                        adjusted_units = kelly_size / signal['entry_price']
-                                        logger.info(f"      🔧 Boyut Kelly'e göre azaltıldı: {sizing_result['position_size_units']:.6f} → {adjusted_units:.6f}")
-                                        sizing_result['position_size_units'] = adjusted_units
-                                        sizing_result['final_risk_usd'] = abs(signal['entry_price'] - signal['sl_price']) * adjusted_units
-                                else:
-                                    logger.info(f"   ✅ Kelly Kontrolü OK: ${current_position_value:.2f} <= ${kelly_size:.2f}")
-                        
-                        except ImportError as ie:
-                            logger.warning(f"   ⚠️ Kelly calculator modülü yüklenemedi: {ie}")
-                            logger.warning(f"   💡 Kelly kontrolü atlandı - risk_manager/kelly_calculator.py dosyasını kontrol edin")
-                        except Exception as kelly_err:
-                            logger.error(f"   ❌ Kelly hesaplama hatası: {kelly_err}", exc_info=True)
-                            logger.warning(f"   Kelly kontrolü atlandı, pozisyon boyutu değiştirilmedi")
-                        
-                        # 🆕 v7.1: MARGIN KONTROLÜ
-                        # Pozisyon için gerekli margin'i hesapla
-                        position_value = sizing_result['position_size_units'] * signal['entry_price']
-                        required_leverage = sizing_result.get('leverage', config.FUTURES_LEVERAGE)
-                        required_margin = position_value / required_leverage
-                        
-                        # Margin yeterli mi kontrol et
-                        can_open_position, margin_reason = margin_tracker.can_open_new_position(required_margin, db)
-                        
-                        if not can_open_position:
-                            logger.warning(f"   ⛔ SKIP {symbol}: {margin_reason}")
-                            continue
-                        else:
-                            logger.info(f"   ✅ Margin OK: ${required_margin:.2f} gereken, pozisyon açılabilir")
-                        
-                        # Portföy guard: günlük risk/drawdown limitleri
-                        try:
-                            # Portföy bakiyesi al (mevcut akıştan)
-                            if executor:
-                                portfolio_usd = executor.get_futures_account_balance()
-                                if portfolio_usd <= 0:
-                                    portfolio_usd = getattr(config, 'VIRTUAL_PORTFOLIO_USD', 1000)
-                            else:
-                                portfolio_usd = getattr(config, 'VIRTUAL_PORTFOLIO_USD', 1000)
-
-                            from src.risk_manager.portfolio_guard import check_daily_limits
-                            allow_open, reason, guard_status = check_daily_limits(config, portfolio_usd)
-                            if not allow_open:
-                                logger.warning(f"   ⛔ Portföy Guard engelledi: {reason} | Status: {guard_status}")
-                                continue
-                            else:
-                                logger.info(f"   ✅ Portföy Guard OK: Risk%={guard_status.get('open_risk_today_pct',0):.2f}, DD%={guard_status.get('dd_today_pct',0):.2f}")
-                        except Exception as guard_err:
-                            logger.warning(f"   Portföy guard kontrolü başarısız: {guard_err}")
-
-                        # Signal verilerini güncelle
-                        signal.update({
-                            'final_risk_usd': sizing_result['final_risk_usd'],
-                            'reward_usd': sizing_result['final_risk_usd'] * signal['rr_ratio'],
-                            'position_size_units': sizing_result['position_size_units'],
-                            'correlation_group': signal_group,
-                            'open_time': int(time.time()),
-                            'planned_risk_percent': planned_risk_percent,
-                            'volatility_multiplier': sizing_result.get('volatility_multiplier', 1.0),
-                            'volatility_score': sizing_result.get('volatility_score', 0.5),
-                            'leverage': sizing_result.get('leverage', config.FUTURES_LEVERAGE),
-                            'position_size_usd': signal['entry_price'] * sizing_result['position_size_units'],
-                            'kelly_size': kelly_size,                # Kelly önerilen pozisyon değeri (USD)
-                            'kelly_percent': kelly_percent,          # Gerçek Kelly yüzdesi (cap sonrası)
-                            'kelly_confidence': kelly_confidence,
-                            'risk_reasoning': kelly_reasoning
-                        })
-                        
-                        # DB'ye kaydet (PENDING durumunda)
-                        new_db_position = OpenPosition(
-                            symbol=signal['symbol'],
-                            strategy=signal['strategy'],
-                            direction=signal['direction'],
-                            quality_grade=signal['quality_grade'],
-                            entry_price=signal['entry_price'],
-                            sl_price=signal['sl_price'],
-                            tp_price=signal['tp_price'],
-                            rr_ratio=signal['rr_ratio'],
-                            position_size_units=signal['position_size_units'],
-                            final_risk_usd=signal['final_risk_usd'],
-                            planned_risk_percent=signal['planned_risk_percent'],
-                            correlation_group=signal['correlation_group'],
-                            open_time=signal['open_time'],
-                            fng_index_at_signal=signal.get('fng_index_at_signal'),
-                            news_sentiment_at_signal=signal.get('news_sentiment_at_signal'),
-                            reddit_sentiment_at_signal=signal.get('reddit_sentiment_at_signal'),
-                            google_trends_score_at_signal=signal.get('google_trends_score_at_signal'),
-                            leverage=sizing_result.get('leverage', 2),
-                            trailing_stop_active=is_trailing_active,
-                            trailing_stop_distance=trailing_distance,
-                            high_water_mark=high_water_mark,
-                            partial_tp_1_price=partial_tp_1_price,
-                            partial_tp_1_percent=partial_tp_1_percent,
-                            partial_tp_1_taken=False,
-                            remaining_position_size=signal['position_size_units'],
-                            volatility_score=signal.get('volatility_score', 0.5),  # 🆕 EKLENDİ
-                            kelly_percent=(signal.get('kelly_percent') or 0.0),
-                            kelly_confidence=signal.get('kelly_confidence'),
-                            risk_reasoning=signal.get('risk_reasoning', ''),
-                            status='PENDING'
+                        # EMA calculator ekle
+                        ema_manager.add_symbol(
+                            symbol=symbol,
+                            ema_short=config.HYBRID_EMA_SHORT,
+                            ema_long=config.HYBRID_EMA_LONG,
+                            warmup=config.HYBRID_WARMUP_CANDLES
                         )
                         
-                        db.add(new_db_position)
-                        db.flush()
+                        # WebSocket subscribe
+                        websocket_manager.subscribe_symbol(symbol)
                         
-                        # ⚠️ KRİTİK: SİMÜLASYON MODU KONTROLÜ
-                        position_opened_successfully = False
+                    except Exception as e:
+                        logger.error(f"Subscribe hatası [{symbol}]: {e}")
+                        continue
+            elif not websocket_started and to_add:
+                logger.warning(f"   ⚠️ WebSocket henüz başlatılmadı, {len(to_add)} coin beklemede")
+            
+            # Watchlist'i güncelle
+            current_watchlist = new_watchlist
+            
+            logger.info("\n📊 ADAPTIVE SCAN TAMAMLANDI")
+            logger.info(f"   Watchlist size: {len(current_watchlist)}")
+            if current_watchlist:
+                logger.info(f"   Coins: {', '.join(sorted(current_watchlist))}")
+            logger.info("=" * 70 + "\n")
+            
+            # Bir sonraki scan'e kadar bekle
+            logger.info(f"⏳ Next scan in {scan_interval}s...")
+            stop_event.wait(scan_interval)
+            
+        except Exception as e:
+            logger.error(f"❌ Adaptive scanner hatası: {e}", exc_info=True)
+            # Hata durumunda 60 saniye bekle
+            stop_event.wait(60)
+    
+    logger.info("🛑 Adaptive Scanner thread sonlandırıldı")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 🆕 v10.9: HYBRID WEBSOCKET CROSSOVER CALLBACK
+# ═══════════════════════════════════════════════════════════════════════
+
+def on_websocket_crossover(kline_data: dict):
+    """
+    WebSocket crossover callback - instant position opening
+    
+    Called by WebSocket manager when kline data arrives.
+    Checks for crossover and opens position if detected.
+    
+    Args:
+        kline_data: Dict with keys:
+            - symbol: str
+            - open: float
+            - high: float
+            - low: float
+            - close: float
+            - volume: float
+            - timestamp: int
+            - is_closed: bool
+    """
+    try:
+        symbol = kline_data.get('symbol')
+        close_price = kline_data.get('close')
+        is_closed = kline_data.get('is_closed', False)
+        
+        # Only process closed candles for crossover detection
+        if not is_closed:
+            return
+        
+        logger.debug(f"📊 WebSocket kline received: {symbol} @ ${close_price:.2f}")
+        
+        # Get EMA cache to check for crossover
+        ema_cache = websocket_manager.get_ema_cache(symbol)
+        
+        if not ema_cache:
+            logger.debug(f"⚠️ No EMA cache for {symbol}, skipping crossover check")
+            return
+        
+        prev_ema5 = ema_cache.get('prev_ema5')
+        prev_ema20 = ema_cache.get('prev_ema20')
+        current_ema5 = ema_cache.get('current_ema5')
+        current_ema20 = ema_cache.get('current_ema20')
+        
+        if None in (prev_ema5, prev_ema20, current_ema5, current_ema20):
+            logger.debug(f"⚠️ Incomplete EMA cache for {symbol}")
+            return
+        
+        # Detect crossover
+        direction = None
+        
+        # Bullish crossover: EMA5 crosses above EMA20
+        if prev_ema5 < prev_ema20 and current_ema5 > current_ema20:
+            direction = 'LONG'
+        # Bearish crossover: EMA5 crosses below EMA20
+        elif prev_ema5 > prev_ema20 and current_ema5 < current_ema20:
+            direction = 'SHORT'
+        
+        if not direction:
+            return  # No crossover
+        
+        logger.info("\n" + "="*80)
+        logger.info(f"🚨 INSTANT CROSSOVER DETECTED - WebSocket")
+        logger.info("="*80)
+        logger.info(f"Symbol: {symbol}")
+        logger.info(f"Direction: {direction}")
+        logger.info(f"Price: ${close_price:.2f}")
+        logger.info(f"EMA5: {prev_ema5:.2f} → {current_ema5:.2f}")
+        logger.info(f"EMA20: {prev_ema20:.2f} → {current_ema20:.2f}")
+        logger.info("="*80)
+        
+        # Check if instant trade is enabled
+        if not config.INSTANT_CROSSOVER_TRADE:
+            logger.warning("⚠️ Instant crossover trade disabled in config")
+            return
+        
+        # Validate with 30m trend
+        logger.info(f"🔍 Validating with 30m timeframe...")
+        
+        from src.data_fetcher.binance_fetcher import get_binance_klines
+        df_30m = get_binance_klines(symbol, config.SECONDARY_TIMEFRAME, limit=50)
+        
+        if df_30m is None or df_30m.empty:
+            logger.warning(f"⚠️ Cannot validate 30m trend for {symbol}")
+            return
+        
+        # Calculate 30m EMAs
+        df_30m['ema5'] = df_30m['close'].ewm(span=config.HYBRID_EMA_SHORT, adjust=False).mean()
+        df_30m['ema20'] = df_30m['close'].ewm(span=config.HYBRID_EMA_LONG, adjust=False).mean()
+        
+        last_30m = df_30m.iloc[-1]
+        
+        if pd.isna(last_30m['ema5']) or pd.isna(last_30m['ema20']):
+            logger.warning(f"⚠️ Missing 30m EMA data for {symbol}")
+            return
+        
+        # Check 30m alignment
+        ema5_30m = float(last_30m['ema5'])
+        ema20_30m = float(last_30m['ema20'])
+        
+        trend_aligned = False
+        
+        if direction == 'LONG' and ema5_30m > ema20_30m:
+            trend_aligned = True
+            logger.info(f"✅ 30m trend ALIGNED for LONG (EMA5: {ema5_30m:.2f} > EMA20: {ema20_30m:.2f})")
+        elif direction == 'SHORT' and ema5_30m < ema20_30m:
+            trend_aligned = True
+            logger.info(f"✅ 30m trend ALIGNED for SHORT (EMA5: {ema5_30m:.2f} < EMA20: {ema20_30m:.2f})")
+        else:
+            logger.warning(
+                f"❌ 30m trend NOT ALIGNED for {direction} "
+                f"(EMA5: {ema5_30m:.2f}, EMA20: {ema20_30m:.2f})"
+            )
+            return
+        
+        # Create instant signal (simplified confidence = 0.6 for WebSocket signals)
+        signal = {
+            'signal': direction,
+            'entry_price': close_price,
+            'confidence': 0.6,  # WebSocket signals get base confidence
+            'source': 'websocket',
+            'timeframes': {
+                '15m': {'ema5': current_ema5, 'ema20': current_ema20},
+                '30m': {'ema5': ema5_30m, 'ema20': ema20_30m}
+            }
+        }
+        
+        logger.info(f"📊 Instant signal confidence: {signal['confidence']:.2f}")
+        
+        # Execute position
+        try:
+            position_opened = execute_multi_timeframe_position(symbol, signal)
+            
+            if position_opened:
+                logger.info(f"✅ INSTANT POSITION OPENED: {symbol} {direction}")
+                
+                # Send Telegram alert
+                try:
+                    alert_msg = (
+                        f"🚨 *INSTANT CROSSOVER ENTRY*\n\n"
+                        f"*Symbol:* `{symbol}`\n"
+                        f"*Direction:* {direction}\n"
+                        f"*Entry:* ${close_price:.2f}\n"
+                        f"*Source:* WebSocket (Real-time)\n"
+                        f"*Confidence:* {signal['confidence']:.2f}\n\n"
+                        f"_Position opened immediately on crossover detection_"
+                    )
+                    telegram_notifier.send_message(alert_msg)
+                except Exception as tg_error:
+                    logger.error(f"❌ Telegram alert error: {tg_error}")
+            else:
+                logger.warning(f"⚠️ Instant position could not be opened: {symbol}")
+        
+        except Exception as exec_error:
+            logger.error(f"❌ Instant position execution error: {exec_error}", exc_info=True)
+    
+    except Exception as e:
+        logger.error(f"❌ WebSocket crossover callback error: {e}", exc_info=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 🆕 v10.9: HYBRID WEBSOCKET MONITORING THREAD
+# ═══════════════════════════════════════════════════════════════════════
+
+def run_hybrid_websocket_monitor(stop_event):
+    """
+    v10.9: Hybrid WebSocket Monitoring Thread
+    
+    Proximity coinleri gerçek zamanlı izler:
+    1. Scanner thread proximity coinleri tespit eder
+    2. Bu thread onları WebSocket ile takip eder
+    3. EMA crossover anında pozisyon açar
+    4. Uzaklaşan coinleri unsubscribe eder
+    
+    Global değişken kullanır:
+    - proximity_watchlist: Scanner'dan gelen yakın coinler
+    """
+    global proximity_watchlist, websocket_manager
+    
+    logger.info("🚀 Hybrid WebSocket Monitor thread başlatıldı")
+    
+    # WebSocket manager başlat (crossover callback ile)
+    try:
+        from src.data_fetcher.websocket_manager import WebSocketKlineManager
+        
+        # Create manager with crossover callback
+        websocket_manager = WebSocketKlineManager(config, stop_event)
+        
+        # Set crossover callback
+        websocket_manager.on_kline_callback = on_websocket_crossover
+        
+        # Start WebSocket manager
+        websocket_manager.start()
+        logger.info("✅ WebSocket manager started with crossover callback")
+    except Exception as e:
+        logger.error(f"❌ WebSocket manager başlatılamadı: {e}", exc_info=True)
+        return
+    
+    subscribed_symbols = set()
+    check_interval = config.WEBSOCKET_CHECK_INTERVAL  # Default: 5 saniye
+    
+    while not stop_event.is_set():
+        try:
+            # Proximity watchlist'ten yeni coinleri al
+            with proximity_watchlist_lock:
+                current_watchlist = proximity_watchlist.copy()
+            
+            new_symbols = set(current_watchlist.keys())
+            
+            # Eklenmesi gerekenler
+            to_subscribe = new_symbols - subscribed_symbols
+            
+            # Çıkarılması gerekenler (artık yakın değil)
+            to_unsubscribe = subscribed_symbols - new_symbols
+            
+            # Subscribe new coins
+            for symbol in to_subscribe:
+                if len(subscribed_symbols) >= config.MAX_WEBSOCKET_SUBSCRIPTIONS:
+                    logger.warning(
+                        f"⚠️ WebSocket limit reached ({config.MAX_WEBSOCKET_SUBSCRIPTIONS}), "
+                        f"cannot subscribe {symbol}"
+                    )
+                    break
+                
+                try:
+                    # Update EMA cache for crossover detection
+                    coin_data = current_watchlist[symbol]
+                    
+                    # Get previous EMA values (from 1 candle ago)
+                    df = binance_fetcher.get_binance_klines(
+                        symbol, 
+                        config.PRIMARY_TIMEFRAME, 
+                        limit=3
+                    )
+                    
+                    if df is not None and len(df) >= 2:
+                        df['ema5'] = df['close'].ewm(span=config.HYBRID_EMA_SHORT, adjust=False).mean()
+                        df['ema20'] = df['close'].ewm(span=config.HYBRID_EMA_LONG, adjust=False).mean()
                         
-                        if not config.ENABLE_REAL_TRADING:
-                            # SİMÜLASYON MODU - Binance'e emir gönderme
-                            logger.warning(f"   ⚠️ SİMÜLASYON MODU - {symbol} için Binance'e emir GÖNDERİLMEDİ")
-                            logger.info(f"      📝 Sadece DB'ye kaydedildi: {symbol} {signal['direction']}")
-                            logger.info(f"      💰 Miktar: {signal['position_size_units']:.4f} ({signal['final_risk_usd']:.2f} USD risk)")
-                            logger.info(f"      📊 Entry: {signal['entry_price']:.4f} | SL: {signal['sl_price']:.4f} | TP: {signal['tp_price']:.4f}")
+                        prev_ema5 = float(df.iloc[-2]['ema5'])
+                        prev_ema20 = float(df.iloc[-2]['ema20'])
+                        current_ema5 = coin_data['ema5']
+                        current_ema20 = coin_data['ema20']
+                        
+                        websocket_manager.update_ema_cache(
+                            symbol,
+                            prev_ema5,
+                            prev_ema20,
+                            current_ema5,
+                            current_ema20
+                        )
+                        
+                        # Subscribe to WebSocket
+                        if websocket_manager.subscribe(symbol):
+                            subscribed_symbols.add(symbol)
+                            logger.info(
+                                f"📡 WebSocket subscribed: {symbol} "
+                                f"(distance: {coin_data['distance_percent']:.4f}%, "
+                                f"bias: {coin_data['direction_bias']})"
+                            )
+                
+                except Exception as sub_error:
+                    logger.error(f"❌ {symbol} WebSocket subscribe error: {sub_error}")
+            
+            # Unsubscribe removed coins
+            for symbol in to_unsubscribe:
+                try:
+                    if websocket_manager.unsubscribe(symbol):
+                        subscribed_symbols.remove(symbol)
+                        logger.info(f"📴 WebSocket unsubscribed: {symbol} (moved away from crossover)")
+                except Exception as unsub_error:
+                    logger.error(f"❌ {symbol} WebSocket unsubscribe error: {unsub_error}")
+            
+            # Status log
+            if subscribed_symbols:
+                logger.debug(
+                    f"📊 WebSocket monitoring: {len(subscribed_symbols)} coins "
+                    f"(Watchlist: {len(current_watchlist)})"
+                )
+            
+            # Wait before next check
+            stop_event.wait(check_interval)
+            
+        except Exception as e:
+            logger.error(f"❌ Hybrid WebSocket monitor error: {e}", exc_info=True)
+            stop_event.wait(check_interval)
+    
+    # Cleanup on shutdown
+    try:
+        if websocket_manager:
+            websocket_manager.stop()
+            logger.info("✅ WebSocket manager stopped")
+    except Exception as e:
+        logger.error(f"❌ WebSocket cleanup error: {e}")
+    
+    logger.info("🛑 Hybrid WebSocket Monitor thread sonlandırıldı")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 🆕 v10.8: MULTI-TIMEFRAME SCAN CYCLE
+# ═══════════════════════════════════════════════════════════════════════
+
+def run_multi_timeframe_scanner(stop_event):
+    """
+    v11.0: HTF-LTF Scanner (1H Filter + 15M Trigger)
+    
+    Yeni Strateji Mantığı:
+    1. Layer 1 (HTF Filter): 1H grafikte trend yönünü belirle (LONG/SHORT izni)
+    2. Layer 2 (LTF Trigger): 15M grafikte izin verilen yönde giriş sinyali ara
+    3. Layer 3 (Risk Filters): ATR ve volume kontrolleri
+    
+    Her 15 dakikada (900 saniye) bir çalışır ve tüm USDT futures'ı tarar.
+    
+    Avantajları:
+    - HTF trend filtresi sayesinde kararsız piyasalarda işlem yok
+    - LTF trigger ile zamanında giriş
+    - Risk filtreleri ile volatilite ve hacim kontrolü
+    - Yüksek kaliteli sinyaller
+    """
+    scan_interval = getattr(config, 'ADAPTIVE_SCAN_INTERVAL', 900)  # 15 dakika
+    
+    # Coin pool - tüm USDT futures pairs
+    try:
+        from src.data_fetcher.binance_fetcher import binance_client
+        
+        logger.info("🔍 Binance Futures symbol listesi çekiliyor...")
+        exchange_info = binance_client.futures_exchange_info()
+        
+        # Sadece USDT perpetual ve TRADING aktif olanlar
+        coin_pool = [
+            s['symbol'] 
+            for s in exchange_info['symbols']
+            if s['symbol'].endswith('USDT') 
+            and s['contractType'] == 'PERPETUAL'
+            and s['status'] == 'TRADING'
+        ]
+        
+        logger.info(f"🎯 HTF-LTF Scanner başlatıldı (v11.0)")
+        logger.info(f"   Scan interval: {scan_interval}s ({scan_interval/60:.1f} min)")
+        logger.info(f"   HTF Filter: {config.HTF_TIMEFRAME}")
+        logger.info(f"   LTF Trigger: {config.LTF_TIMEFRAME}")
+        logger.info(f"   Coin pool: {len(coin_pool)} USDT pairs")
+        
+    except Exception as e:
+        logger.error(f"❌ Coin pool alınamadı: {e}")
+        # Fallback: config'den al
+        coin_pool = getattr(config, 'HYBRID_SYMBOLS', ['BTCUSDT', 'ETHUSDT'])
+        logger.warning(f"   ⚠️ Fallback coin pool: {coin_pool}")
+    
+    scan_count = 0
+    
+    while not stop_event.is_set():
+        try:
+            scan_count += 1
+            logger.info("\n" + "="*80)
+            logger.info(f"🔍 HTF-LTF SCAN #{scan_count} BAŞLIYOR")
+            logger.info("="*80)
+            logger.info(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            signals_found = 0
+            positions_opened = 0
+            htf_filtered = 0  # HTF filter tarafından reddedilen
+            ltf_no_trigger = 0  # LTF'de sinyal bulunamayan
+            risk_rejected = 0  # Risk filter tarafından reddedilen
+            
+            # Her coin için HTF-LTF analiz
+            for idx, symbol in enumerate(coin_pool, 1):
+                try:
+                    # Emergency stop check
+                    if is_emergency_stop_active():
+                        logger.warning("🚨 Emergency stop active - Scanner durduruluyor")
+                        return
+                    
+                    if idx % 50 == 0:  # Her 50 coinde progress log
+                        logger.info(f"\n📊 Progress: {idx}/{len(coin_pool)} coins scanned...")
+                    
+                    logger.debug(f"[{idx}/{len(coin_pool)}] 🔍 {symbol}")
+                    
+                    # ═══════════════════════════════════════════════════════
+                    # STEP 1: Fetch HTF (1H) Data
+                    # ═══════════════════════════════════════════════════════
+                    from src.data_fetcher.binance_fetcher import get_binance_klines
+                    
+                    df_1h = get_binance_klines(
+                        symbol=symbol,
+                        interval=config.HTF_TIMEFRAME,
+                        limit=config.HTF_CANDLE_LIMIT
+                    )
+                    
+                    if df_1h is None or df_1h.empty:
+                        logger.debug(f"   ⚠️ {symbol}: 1H data alınamadı")
+                        continue
+                    
+                    # Add HTF indicators
+                    df_1h = add_htf_indicators(df_1h, config.HTF_TIMEFRAME)
+                    
+                    # ═══════════════════════════════════════════════════════
+                    # STEP 2: HTF Filter Check (Layer 1)
+                    # ═══════════════════════════════════════════════════════
+                    from src.technical_analyzer.htf_ltf_strategy import check_htf_filter_1h
+                    
+                    allowed_direction = check_htf_filter_1h(df_1h, symbol)
+                    
+                    if allowed_direction is None:
+                        # HTF kararsız - coin atla
+                        htf_filtered += 1
+                        logger.debug(f"   ⛔ {symbol}: HTF kararsız (atlandı)")
+                        continue
+                    
+                    # HTF izin veriyor - LTF'ye geç
+                    logger.info(f"\n[{idx}/{len(coin_pool)}] ✅ {symbol}: HTF → {allowed_direction} izni var")
+                    
+                    # ═══════════════════════════════════════════════════════
+                    # STEP 3: Fetch LTF (15M) Data
+                    # ═══════════════════════════════════════════════════════
+                    df_15m = get_binance_klines(
+                        symbol=symbol,
+                        interval=config.LTF_TIMEFRAME,
+                        limit=config.LTF_CANDLE_LIMIT
+                    )
+                    
+                    if df_15m is None or df_15m.empty:
+                        logger.debug(f"   ⚠️ {symbol}: 15M data alınamadı")
+                        continue
+                    
+                    # Add LTF indicators
+                    df_15m = add_ltf_indicators(df_15m, config.LTF_TIMEFRAME)
+                    
+                    # ═══════════════════════════════════════════════════════
+                    # STEP 4: Full HTF-LTF Analysis
+                    # ═══════════════════════════════════════════════════════
+                    signal = analyze_htf_ltf_signal(
+                        df_1h=df_1h,
+                        df_15m=df_15m,
+                        symbol=symbol,
+                        max_atr_percent=config.SCALP_MAX_ATR_PERCENT,
+                        volume_confirmation_required=config.VOLUME_CONFIRMATION_REQUIRED
+                    )
+                    
+                    if signal is None:
+                        # LTF trigger veya risk filter başarısız
+                        logger.debug(f"   ⚠️ {symbol}: LTF trigger veya risk filter başarısız")
+                        ltf_no_trigger += 1
+                        continue
+                    
+                    # ═══════════════════════════════════════════════════════
+                    # STEP 5: SIGNAL FOUND! 
+                    # ═══════════════════════════════════════════════════════
+                    signals_found += 1
+                    
+                    logger.info(f"\n{'🎯'*30}")
+                    logger.info(f"✅ VALID SIGNAL: {symbol}")
+                    logger.info(f"{'🎯'*30}")
+                    logger.info(f"   Direction: {signal['signal']}")
+                    logger.info(f"   Entry Price: ${signal['entry_price']:.4f}")
+                    logger.info(f"   HTF Direction: {signal['htf_direction']}")
+                    logger.info(f"   LTF EMA5: {signal['ltf_trigger']['ema5']:.4f}")
+                    logger.info(f"   LTF EMA20: {signal['ltf_trigger']['ema20']:.4f}")
+                    logger.info(f"   LTF RSI: {signal['ltf_trigger']['rsi']:.1f}")
+                    logger.info(f"   Crossover: {signal['ltf_trigger']['crossover_candle']}")
+                    
+                    # ═══════════════════════════════════════════════════════
+                    # STEP 6: Open Position
+                    # ═══════════════════════════════════════════════════════
+                    try:
+                        # Convert signal to expected format for execute_multi_timeframe_position
+                        formatted_signal = {
+                            'signal': signal['signal'],
+                            'entry_price': signal['entry_price'],
+                            'confidence': 0.7,  # HTF-LTF signals have good confidence
+                            'source': 'htf_ltf_v11',
+                            'htf_direction': signal['htf_direction'],
+                            'ltf_trigger': signal['ltf_trigger']
+                        }
+                        
+                        position_opened = execute_multi_timeframe_position(symbol, formatted_signal)
+                        
+                        if position_opened:
+                            positions_opened += 1
+                            logger.info(f"✅ POSITION OPENED: {symbol} {signal['signal']}")
                             
-                            # Simülasyon için sahte order ID
-                            new_db_position.status = 'SIMULATED'
-                            new_db_position.market_order_id = f"SIM_{int(time.time())}_{symbol}"
-                            position_opened_successfully = True
-                            
-                            # Simülasyon bildirimi gönder
+                            # Telegram alert
                             try:
-                                telegram_notifier.send_new_signal_alert([signal])
-                            except Exception as tel_e:
-                                logger.error(f"Telegram bildirimi hatası: {tel_e}")
-                            
-                            if realtime_manager_instance:
-                                realtime_manager_instance.add_symbol(symbol)
-                        
+                                alert_msg = (
+                                    f"🎯 *HTF-LTF SIGNAL (v11.0)*\n\n"
+                                    f"*Symbol:* `{symbol}`\n"
+                                    f"*Direction:* {signal['signal']}\n"
+                                    f"*Entry:* ${signal['entry_price']:.4f}\n\n"
+                                    f"*HTF Filter (1H):* {signal['htf_direction']} izni\n"
+                                    f"*LTF Trigger (15M):* EMA crossover\n"
+                                    f"  - RSI: {signal['ltf_trigger']['rsi']:.1f}\n"
+                                    f"  - MACD Hist: {signal['ltf_trigger']['macd_hist']:.4f}\n\n"
+                                    f"_Multi-layer filtering: HTF trend + LTF timing + Risk checks_"
+                                )
+                                telegram_notifier.send_message(alert_msg)
+                            except Exception as tg_error:
+                                logger.error(f"❌ Telegram alert error: {tg_error}")
                         else:
-                            # GERÇEK İŞLEM MODU - Binance'e emir gönder
-                            try:
-                                logger.info(f"   🚀 GERÇEK EMİR GÖNDERİLİYOR: {symbol} {signal['direction']}")
-                                
-                                leverage_to_use = sizing_result.get('leverage', config.FUTURES_LEVERAGE)
-                                if executor and executor.set_leverage(symbol, leverage_to_use):
-                                    logger.info(f"      ✅ Kaldıraç ayarlandı: {leverage_to_use}x")
-                                
-                                if executor and executor.set_margin_type(symbol, config.FUTURES_MARGIN_TYPE):
-                                    logger.info(f"      ✅ Margin tipi: {config.FUTURES_MARGIN_TYPE}")
-                                
-                                if executor:
-                                    market_order = executor.open_market_order(
-                                        symbol=symbol,
-                                        direction=signal['direction'],
-                                        quantity_units=signal['position_size_units']
-                                    )
-                                    
-                                    if market_order:
-                                        logger.info(f"      ✅ Pozisyon açıldı! Order ID: {market_order['orderId']}")
-                                        new_db_position.market_order_id = market_order['orderId']
-                                        
-                                        sl_tp_orders = executor.place_sl_tp_orders(
-                                            symbol=symbol,
-                                            direction=signal['direction'],
-                                            quantity_units=signal['position_size_units'],
-                                            sl_price=signal['sl_price'],
-                                            tp_price=signal['tp_price'],
-                                            entry_price=signal['entry_price']
-                                        )
-                                        
-                                        if sl_tp_orders:
-                                            logger.info(f"      ✅ SL/TP emirleri yerleştirildi!")
-                                            new_db_position.sl_order_id = sl_tp_orders['sl_order_id']
-                                            new_db_position.tp_order_id = sl_tp_orders['tp_order_id']
-                                            new_db_position.status = 'ACTIVE'
-                                            position_opened_successfully = True
-                                            
-                                            logger.info(f"   ✅ {symbol} POZİSYON AKTİF!")
-                                            
-                                            try:
-                                                telegram_notifier.send_new_signal_alert([signal])
-                                            except Exception as tel_e:
-                                                logger.error(f"Telegram bildirimi hatası: {tel_e}")
-                                            
-                                            if realtime_manager_instance:
-                                                realtime_manager_instance.add_symbol(symbol)
-                                        else:
-                                            raise Exception("SL/TP emirleri yerleştirilemedi!")
-                                    else:
-                                        raise Exception("Market emri gönderilemedi!")
-                                else:
-                                    raise Exception("Executor başlatılmamış!")
-                            
-                            except Exception as order_error:
-                                logger.error(f"   ❌ {symbol} POZİSYON AÇILAMADI: {order_error}", exc_info=True)
-                                
-                                try:
-                                    error_msg = f"*❌ POZİSYON AÇILAMADI*\n\n"
-                                    error_msg += f"*{telegram_notifier.escape_markdown_v2('-')} Sembol:* {telegram_notifier.escape_markdown_v2(symbol)}\n"
-                                    error_msg += f"*{telegram_notifier.escape_markdown_v2('-')} Yön:* {telegram_notifier.escape_markdown_v2(signal['direction'])}\n"
-                                    error_msg += f"*{telegram_notifier.escape_markdown_v2('-')} Hata:* {telegram_notifier.escape_markdown_v2(str(order_error)[:200])}"
-                                    telegram_notifier.send_message(error_msg)
-                                except Exception as tel_e:
-                                    logger.error(f"Hata bildirimi gönderilemedi: {tel_e}")
-                                
-                                db.delete(new_db_position)
-                                position_opened_successfully = False
-                        
-                        if position_opened_successfully:
-                            final_signals_to_open.append(signal)
-                            current_open_count += 1
-                            symbol_counts[symbol] = symbol_counts.get(symbol, 0) + 1
-                            open_symbols_set.add(symbol)
-                            
-                            # 🆕 GRUP RİSK GÜNCELLE
-                            group_risks[signal_group] = group_risks.get(signal_group, 0.0) + planned_risk_percent
-                            
-                            logger.info(f"   ✅ SELECTED {symbol} {signal['direction']} (Strateji:{signal['strategy']}, Kalite:{quality_grade}, Risk:{signal['final_risk_usd']:.2f}$)")
-                            logger.debug(f"      Grup '{signal_group}' toplam risk: {group_risks[signal_group]:.2f}%")
+                            logger.warning(f"⚠️ Position could not be opened: {symbol}")
+                    
+                    except Exception as exec_error:
+                        logger.error(f"❌ Position execution error [{symbol}]: {exec_error}", exc_info=True)
+                    
+                except Exception as coin_error:
+                    logger.error(f"❌ Error analyzing {symbol}: {coin_error}")
+                    continue
+                
+                finally:
+                    # Rate limiting: coinler arası 0.2 saniye bekle (5 coin/saniye)
+                    time.sleep(0.2)
+            
+            # Scan özeti
+            logger.info("\n" + "="*80)
+            logger.info(f"📊 HTF-LTF SCAN #{scan_count} TAMAMLANDI")
+            logger.info("="*80)
+            logger.info(f"   Scanned coins: {len(coin_pool)}")
+            logger.info(f"   HTF filtered: {htf_filtered} (kararsız trend)")
+            logger.info(f"   LTF checked: {len(coin_pool) - htf_filtered}")
+            logger.info(f"   Signals found: {signals_found}")
+            logger.info(f"   Positions opened: {positions_opened}")
+            logger.info(f"   Next scan: {scan_interval}s ({scan_interval/60:.1f} min)")
+            logger.info("="*80 + "\n")
+            
+            # Bir sonraki scan'e kadar bekle
+            logger.info(f"⏳ Waiting {scan_interval}s until next scan...")
+            stop_event.wait(scan_interval)
+            
+        except Exception as e:
+            logger.error(f"❌ HTF-LTF scanner error: {e}", exc_info=True)
+            # Hata durumunda 60 saniye bekle
+            logger.warning("⚠️ Waiting 60s before retry...")
+            stop_event.wait(60)
+    
+    logger.info("🛑 HTF-LTF Scanner thread sonlandırıldı")
 
-                if final_signals_to_open:
-                    logger.info(f"{len(final_signals_to_open)} yeni pozisyon AÇILDI ve DB'ye kaydedildi.")
-                else:
-                    logger.info("Sıralama/filtreleme sonrası açılacak yeni pozisyon bulunamadı.")
+
+def execute_multi_timeframe_position(symbol: str, signal: dict) -> bool:
+    """
+    Multi-timeframe sinyali pozisyona çevir
+    
+    Args:
+        symbol: Trading pair
+        signal: check_multi_timeframe_entry() output
+            {
+                'signal': 'LONG' or 'SHORT',
+                'entry_price': float,
+                'confidence': float,
+                'timeframes': {...}
+            }
+    
+    Returns:
+        bool: Pozisyon açıldı mı?
+    """
+    try:
+        direction = signal['signal']
+        entry_price = signal['entry_price']
+        confidence = signal['confidence']
         
-        else:
-            logger.info("Bu tarama döngüsünde R:R filtresini geçen aday sinyal bulunamadı.")
+        logger.info(f"\n{'='*60}")
+        logger.info(f"💼 EXECUTING POSITION: {symbol}")
+        logger.info(f"{'='*60}")
+        logger.info(f"Direction: {direction}")
+        logger.info(f"Entry: ${entry_price:.2f}")
+        logger.info(f"Confidence: {confidence:.2f}")
+        
+        # 1. TP/SL hesapla
+        sl_price, tp_price = calculate_hybrid_sl_tp(symbol, direction, entry_price, confidence)
+        
+        if not sl_price or not tp_price:
+            logger.error(f"❌ SL/TP hesaplanamadı: {symbol}")
+            return False
+        
+        # 2. Position size hesapla
+        position_size = calculate_position_size(symbol, entry_price, sl_price, confidence)
+        
+        if not position_size or position_size <= 0:
+            logger.error(f"❌ Position size hesaplanamadı: {symbol}")
+            return False
+        
+        # 3. Risk check
+        if not can_open_position(symbol):
+            logger.warning(f"⚠️ Cannot open position (risk limits): {symbol}")
+            return False
+        
+        # 4. Pozisyon kaydet
+        position_saved = save_hybrid_position(
+            symbol=symbol,
+            direction=direction,
+            entry_price=entry_price,
+            sl_price=sl_price,
+            tp_price=tp_price,
+            position_size=position_size,
+            score=confidence,  # confidence_score -> score
+            execution_type='MULTI_TIMEFRAME',
+            execution_result={'signal': signal},
+            sentiment_data={
+                'fear_greed_index': signal.get('fear_greed_index'),
+                'news_sentiment': signal.get('news_sentiment'),
+                'reddit_sentiment': signal.get('reddit_sentiment')
+            }
+        )
+        
+        if position_saved:
+            logger.info(f"✅ Position saved to database: {symbol}")
+            
+            # 5. Telegram notification
             try:
-                if getattr(config, 'NOTIFY_ON_NO_SIGNAL', True):
-                    telegram_notifier.send_message(telegram_notifier.escape_markdown_v2("Tarama tamamlandı. Uygun sinyal bulunamadı."))
-            except Exception as e:
-                logger.error(f"Sinyal yok bildirimi hatası: {e}", exc_info=True)
+                send_multi_timeframe_signal_alert(symbol, signal, sl_price, tp_price, position_size)
+            except Exception as tg_error:
+                logger.warning(f"⚠️ Telegram notification failed: {tg_error}")
+            
+            return True
+        else:
+            logger.error(f"❌ Position could not be saved: {symbol}")
+            return False
         
-        # Rate Limit Azaltma
-        if rate_limit_status['binance_delay_multiplier'] > 1.0:
-            time_since_err = time.time() - rate_limit_status.get('last_binance_error_time', 0)
-            if time_since_err > 300:
-                old_mult = rate_limit_status['binance_delay_multiplier']
-                rate_limit_status['binance_delay_multiplier'] = max(1.0, old_mult * 0.9)
-                logger.info(f"Rate limit çarpanı azaltıldı: {old_mult:.1f}x -> {rate_limit_status['binance_delay_multiplier']:.1f}x")
-                rate_limit_status['last_binance_error_time'] = 0
-
     except Exception as e:
-        logger.critical(f"====== ANA TARAMA DÖNGÜSÜ ÇÖKTÜ: {e} ======", exc_info=True)
-        try:
-            if telegram_notifier.bot_instance:
-                err_msg = f"🚨 KRİTİK HATA: Ana tarama döngüsü çöktü!\n{type(e).__name__}: {str(e)[:500]}"
-                telegram_notifier.send_message(telegram_notifier.escape_markdown_v2(err_msg))
-        except Exception as telegram_e:
-            logger.error(f"Telegram çökme bildirimi hatası: {telegram_e}")
+        logger.error(f"❌ Execute position error [{symbol}]: {e}", exc_info=True)
+        return False
 
-    logger.info("====== ANA TARAMA DÖNGÜSÜ TAMAMLANDI ======")
-    
+
+def send_multi_timeframe_signal_alert(symbol: str, signal: dict, sl_price: float, tp_price: float, position_size: float):
+    """Telegram bildirimi gönder"""
     try:
-        performance_monitor.print_performance_summary()
-    except Exception as perf_err:
-        logger.warning(f"⚠️  Performans özeti gösterilemedi: {perf_err}")
-
-# --- Ana Çalıştırma Bloğu ---
-if __name__ == "__main__":
-    logger.info("Ana orchestrator başlatılıyor...")
-    
-    # Güvenlik kontrolü
-    if not config.BINANCE_TESTNET:
-        print("=" * 70)
-        print("⚠️  UYARI: LIVE TRADING MODE AKTİF - GERÇEK PARA KULLANILACAK! ⚠️")
-        print("=" * 70)
-        print(f"📊 Maksimum Pozisyon: {config.MAX_OPEN_POSITIONS}")
-        print(f"💰 Sabit Risk per Trade: ${config.FIXED_RISK_USD}")
-        print(f"🎯 Max Pozisyon Değeri: ${config.MAX_POSITION_VALUE_USD}")
-        print(f"🎯 Grup Riski Limiti: %{config.MAX_RISK_PER_GROUP}")
-        print(f"⚡ Kaldıraç: Dinamik (2x - 10x, SL mesafesine göre)")
-        print(f"💵 Gerçek Bakiye Kullanımı: {config.USE_REAL_BALANCE}")
-        print("=" * 70)
-        print("\n⏰ 10 saniye içinde başlayacak...")
-        print("   (Ctrl+C ile iptal edebilirsiniz)\n")
+        direction = signal['signal']
+        entry_price = signal['entry_price']
+        confidence = signal['confidence']
         
-        try:
-            for i in range(10, 0, -1):
-                print(f"   Başlama: {i} saniye...", end='\r')
-                time.sleep(1)
-            print("\n")
-            logger.warning("🚀 LIVE TRADING BAŞLATILDI - GERÇEK PARA KULLANILIYOR!")
-        except KeyboardInterrupt:
-            print("\n\n❌ Kullanıcı tarafından iptal edildi. Güvenli çıkış yapılıyor...")
-            sys.exit(0)
-    else:
-        logger.info("✅ TESTNET MODE - Güvenli test ortamı kullanılıyor")
+        tf_15m = signal['timeframes']['15m']
+        tf_30m = signal['timeframes']['30m']
+        
+        message = f"""
+🚀 **YENİ POZİSYON AÇILDI**
+
+📊 **Coin:** `{symbol}`
+📈 **Direction:** {direction}
+💰 **Entry:** ${entry_price:,.4f}
+
+**Multi-Timeframe Analysis:**
+├─ 15m EMA5: ${tf_15m['ema5']:.2f}
+├─ 15m EMA20: ${tf_15m['ema20']:.2f}
+├─ 30m EMA5: ${tf_30m['ema5']:.2f}
+└─ 30m EMA20: ${tf_30m['ema20']:.2f}
+
+🎯 **TP:** ${tp_price:,.4f} (+$4.00)
+🛑 **SL:** ${sl_price:,.4f} (-$1.00)
+
+📊 **Position Size:** {position_size:.6f} units
+🎯 **Confidence:** {confidence:.2%}
+
+💎 **Margin:** $10.00
+⚡ **Leverage:** 10x
+
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        
+        telegram_notifier.send_message(message)
+        logger.info("✅ Telegram notification sent")
+        
+    except Exception as e:
+        logger.error(f"❌ Telegram notification error: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def calculate_position_size(symbol: str, entry_price: float, sl_price: float, score: float) -> float:
+    """
+    v10.7.1 SABİT MARGIN SİSTEMİ
     
-    can_trade, reason = check_emergency_stop()
-    if not can_trade:
-        logger.critical(f"🚨 EMERGENCY STOP AKTİF: {reason}")
-        logger.critical("Trading başlatılamıyor! EMERGENCY_STOP.flag dosyasını silin ve yeniden başlatın.")
-        sys.exit(1)
+    Config'den sabit margin:
+    - FIXED_MARGIN_USD: 10 USD
+    - FUTURES_LEVERAGE: 10x
+    - Position Size = (10 × 10) / Entry Price
+    """
+    try:
+        MARGIN_USD = config.FIXED_MARGIN_USD
+        LEVERAGE = config.FUTURES_LEVERAGE
+        
+        # Position size hesapla (coin/token cinsinden)
+        position_size = (MARGIN_USD * LEVERAGE) / entry_price
+        
+        logger.info(f"   💰 Sabit Margin: ${MARGIN_USD} × {LEVERAGE}x = ${MARGIN_USD * LEVERAGE} notional")
+        logger.info(f"   📊 Position Size: {position_size:.6f} {symbol.replace('USDT', '')}")
+        
+        return position_size
+        
+    except Exception as e:
+        logger.error(f"Position sizing hatası: {e}")
+        return None
+
+
+def get_portfolio_value() -> float:
+    """Portfolio değerini al"""
+    try:
+        balance = binance_fetcher.get_futures_balance('USDT')
+        if balance:
+            return balance.get('availableBalance', 1000.0)
+        return 1000.0
+    except:
+        return 1000.0
+
+
+def save_hybrid_position(symbol: str, direction: str, entry_price: float,
+                        sl_price: float, tp_price: float, position_size: float,
+                        score: float, execution_type: str, execution_result: dict,
+                        sentiment_data: dict) -> int:
+    """
+    Pozisyonu DB'ye kaydet - v10.7.1 SABİT MARGIN
+    
+    Config'den sabit değerler:
+    - FIXED_MARGIN_USD: 10 USD
+    - FUTURES_LEVERAGE: 10x
+    """
+    with open_positions_lock:
+        db = db_session()
+        try:
+            # Direction düzeltmesi
+            if direction.lower() in ['bullish', 'long']:
+                db_direction = 'LONG'
+            elif direction.lower() in ['bearish', 'short']:
+                db_direction = 'SHORT'
+            else:
+                db_direction = direction.upper()
+            
+            # Config'den sabit değerler
+            MARGIN_USD = config.FIXED_MARGIN_USD
+            leverage = config.FUTURES_LEVERAGE
+            amount = position_size
+            
+            new_position = OpenPosition(
+                symbol=symbol,
+                strategy='v10.7.1_fixed_margin',
+                direction=db_direction,
+                entry_price=entry_price,
+                sl_price=sl_price,
+                tp_price=tp_price,
+                amount=amount,
+                leverage=leverage,
+                position_size_units=position_size,
+                final_risk_usd=MARGIN_USD,  # ✅ Sabit margin değeri
+                open_time=int(time.time() * 1000),
+                strategy_source='v10.7.1',
+                hybrid_score=score,
+                execution_type=execution_type,
+                fng_index_at_signal=sentiment_data.get('fear_greed_index'),
+                news_sentiment_at_signal=sentiment_data.get('news_sentiment'),
+                reddit_sentiment_at_signal=sentiment_data.get('reddit_sentiment'),
+                status='OPEN',
+                initial_sl=sl_price,
+                order_status='FILLED'
+            )
+            
+            db.add(new_position)
+            db.commit()
+            position_id = new_position.id
+            
+            logger.info(f"   ✅ Position saved to DB: ID={position_id}, {symbol} {db_direction} @ ${entry_price:.4f}")
+            logger.info(f"      💰 Margin: ${MARGIN_USD} | Leverage: {leverage}x | Amount: {amount:.4f}")
+            logger.info(f"      🎯 TP: ${tp_price:.4f} (+$4) | SL: ${sl_price:.4f} (-$1)")
+            
+            return position_id
+        except Exception as e:
+            logger.error(f"DB kayıt hatası: {e}", exc_info=True)
+            db.rollback()
+            return None
+        finally:
+            db_session.remove()
+
+
+def send_hybrid_signal_alert(symbol: str, crossover_data: dict, confirmation: dict,
+                             execution_result: dict, sentiment_data: dict):
+    """Telegram sinyal bildirimi - ATR Bazlı TP/SL ile"""
+    try:
+        direction = crossover_data.get('crossover', '').upper()
+        score = confirmation.get('score', 0)
+        exec_type = execution_result.get('execution_type', 'unknown').upper()
+        components = confirmation.get('components', {})
+        
+        # TP/SL bilgilerini al (execution_result içinde)
+        entry_price = execution_result.get('entry_price', crossover_data.get('current_price', 0))
+        sl_price = execution_result.get('sl_price', 0)
+        tp_price = execution_result.get('tp_price', 0)
+        
+        # Position size bilgileri
+        position_size = execution_result.get('position_size', 0)
+        leverage = config.FUTURES_LEVERAGE
+        
+        # Kar/zarar hesapla
+        if direction == 'LONG':
+            tp_profit = (tp_price - entry_price) * position_size if position_size > 0 else 0
+            sl_loss = abs((entry_price - sl_price) * position_size) if position_size > 0 else 0
+        else:
+            tp_profit = (entry_price - tp_price) * position_size if position_size > 0 else 0
+            sl_loss = abs((sl_price - entry_price) * position_size) if position_size > 0 else 0
+        
+        rr_ratio = tp_profit / sl_loss if sl_loss > 0 else 0
+        
+        msg = f"""
+🤖 v10.10 ATR System
+
+💎 {symbol}
+📊 {direction} ({leverage}x)
+⚡ EMA5: {crossover_data.get('ema_short', 0):.2f}
+⚡ EMA20: {crossover_data.get('ema_long', 0):.2f}
+
+� Fiyatlar:
+   Entry: ${entry_price:,.4f}
+   TP: ${tp_price:,.4f} (+${tp_profit:.2f})
+   SL: ${sl_price:,.4f} (-${sl_loss:.2f})
+   R:R: {rr_ratio:.2f}:1
+
+🎯 Score: {score}/100
+   Trend:{components.get('trend_score',0)}/30
+   Strength:{components.get('strength_score',0)}/25
+   Momentum:{components.get('momentum_score',0)}/25
+   RSI:{components.get('rsi_score',0)}/20
+
+📈 Execution: {exec_type}
+💭 F&G: {sentiment_data.get('fear_greed_index', 50)}
+
+✅ Position OPENED (ATR-Based TP/SL)
+"""
+        telegram_notifier.send_message(msg)
+    except Exception as e:
+        logger.error(f"Telegram bildirimi hatası: {e}")
+
+
+def log_hybrid_stats():
+    """İstatistikleri logla"""
+    logger.info("=" * 70)
+    logger.info("📊 v10.6 HYBRID STATISTICS")
+    logger.info("=" * 70)
+    logger.info(f"Crossovers: {hybrid_stats['total_crossovers']}")
+    logger.info(f"Signals: {hybrid_stats['total_signals']}")
+    logger.info(f"Rejected: {hybrid_stats['rejected_signals']}")
+    logger.info(f"Market: {hybrid_stats['market_executions']}")
+    logger.info(f"Partial: {hybrid_stats['partial_executions']}")
+    logger.info(f"Limit: {hybrid_stats['limit_executions']}")
+    logger.info(f"Avg Score: {hybrid_stats['avg_score']:.1f}/100")
+    logger.info("=" * 70)
+
+
+def graceful_shutdown(signum, frame):
+    """Graceful shutdown"""
+    logger.info("\n" + "=" * 70)
+    logger.info("🛑 Shutdown signal alındı...")
+    logger.info("=" * 70)
+    
+    stop_event.set()
+    
+    if websocket_manager:
+        logger.info("📡 WebSocket kapatılıyor...")
+        try:
+            websocket_manager.stop()
+            logger.info("   ✅ WebSocket kapatıldı")
+        except:
+            pass
+    
+    # Trade manager thread'i bekle
+    if trade_manager_thread and trade_manager_thread.is_alive():
+        logger.info("⏳ Trade manager thread durması bekleniyor...")
+        trade_manager_thread.join(timeout=5)
+        logger.info("   ✅ Trade manager durduruldu")
+    
+    # Scanner thread'i bekle
+    if scanner_thread and scanner_thread.is_alive():
+        logger.info("⏳ Scanner thread durması bekleniyor...")
+        scanner_thread.join(timeout=5)
+        logger.info("   ✅ Scanner durduruldu")
+    
+    log_hybrid_stats()
+    logger.info("\n✅ Shutdown tamamlandı!")
+    sys.exit(0)
+
+
+def main():
+    """Ana program"""
+    logger.info("\n" + "=" * 70)
+    logger.info(f"🤖 ChimeraBot v{config.BOT_VERSION}")
+    logger.info("=" * 70)
+    logger.info("Architecture: Event-Driven Real-Time Strategy")
+    logger.info("Strategy: 15m EMA Crossover + 1H Confirmation")
+    logger.info("=" * 70 + "\n")
+    
+    signal.signal(signal.SIGINT, graceful_shutdown)
+    signal.signal(signal.SIGTERM, graceful_shutdown)
     
     try:
+        logger.info("🔧 Database başlatılıyor...")
         init_db()
-    except Exception as e_db:
-        logger.critical(f"❌ Veritabanı başlatma hatası! Bot çalıştırılamıyor. Hata: {e_db}")
-        sys.exit(1)
-
-    logger.info("🔧 Binance Futures Executor başlatılıyor...")
-    try:
-        executor = initialize_executor(config)
-        logger.info("✅ Executor başarıyla başlatıldı!")
-    except Exception as e_exec:
-        logger.critical(f"❌ Executor başlatılamadı! Hata: {e_exec}", exc_info=True)
-        allow_fallback = getattr(config, 'ALLOW_SIMULATION_FALLBACK', False)
-        if allow_fallback:
-            try:
-                import time as _t
-                logger.warning("⚠️ Executor yok - Simülasyon moduna düşülüyor (ALLOW_SIMULATION_FALLBACK=True)")
-                setattr(config, 'ENABLE_REAL_TRADING', False)
-                executor = None
-                _t.sleep(0.2)
-            except Exception as _fallback_err:
-                logger.error(f"Simülasyon moduna geçiş başarısız: {_fallback_err}")
-                sys.exit(1)
-        else:
-            logger.critical("❌ Fallback devre dışı (ALLOW_SIMULATION_FALLBACK=False) - Bot durduruluyor.")
-            sys.exit(1)
-    
-    # 🆕 STARTUP RECONCILIATION: DB ile Binance senkronizasyonu
-    logger.info("🔍 Startup Reconciliation: DB pozisyonları Binance ile karşılaştırılıyor...")
-    try:
-        from src.trade_manager.reconciliation import reconcile_positions_on_startup
-        recon_result = reconcile_positions_on_startup(config)
-        if recon_result['orphaned_count'] > 0:
-            logger.warning(f"⚠️ {recon_result['orphaned_count']} orphan pozisyon temizlendi: {recon_result['closed_symbols']}")
-        else:
-            logger.info(f"✅ Reconciliation OK: DB ({recon_result['db_count']}) ve Binance ({recon_result['binance_count']}) senkron")
-    except Exception as e_recon:
-        logger.error(f"❌ Reconciliation başarısız (devam edilecek): {e_recon}", exc_info=True)
-    
-    logger.info("🏦 Capital Manager başlatılıyor...")
-    try:
-        capital_manager = initialize_capital_manager(config, executor, stop_event)
-        logger.info("✅ Capital Manager başarıyla başlatıldı!")
-    except Exception as e_cap:
-        logger.error(f"❌ Capital Manager başlatılamadı: {e_cap}", exc_info=True)
-        capital_manager = None
-
-    realtime_manager_instance = None
-    realtime_manager_thread = None
-    logger.info("RealTime Fiyat Yöneticisi (WebSocket) thread'i başlatılıyor...")
-    try:
-        realtime_manager_instance = RealTimeDataManager(stop_event, config)
-        realtime_manager_thread = realtime_manager_instance.start()
-        if realtime_manager_thread and realtime_manager_thread.is_alive():
-            logger.info("✅ RealTime Fiyat Yöneticisi thread'i başarıyla başlatıldı.")
-        else:
-            logger.error("❌ RealTime Fiyat Yöneticisi thread'i BAŞLATILAMADI!")
-    except Exception as e:
-        logger.error(f"❌ RealTime Fiyat Yöneticisi başlatılırken hata: {e}", exc_info=True)
-
-    telegram_initialized = False
-    try:
-        if telegram_notifier.initialize_bot(config):
-            telegram_initialized = True
-            try:
-                start_msg = f"ChimeraBot v{getattr(config, 'BOT_VERSION', '?.?')} başlatıldı."
-                telegram_notifier.send_message(telegram_notifier.escape_markdown_v2(start_msg))
-            except Exception as e:
-                logger.error(f"Başlangıç mesajı gönderilemedi: {e}")
-        else:
-            logger.warning("Telegram botu başlatılamadı.")
-    except Exception as e:
-        logger.error(f"Telegram başlatma hatası: {e}", exc_info=True)
-
-    trade_manager_thread = None
-    logger.info("Trade Manager thread'i başlatılıyor...")
-    try:
-        if not hasattr(trade_manager, 'continuously_check_positions'):
-            raise AttributeError("TM fonksiyonu yok")
+        logger.info("   ✅ Database hazır\n")
         
-        if realtime_manager_instance is None:
-            logger.critical("❌ RealTime Manager başlatılamadığı için Trade Manager başlatılamıyor!")
-            raise RuntimeError("RealTimeManager başlatılamadı.")
+        # 🆕 v11.1: Telegram Bot Başlat
+        logger.info("📱 Telegram bot başlatılıyor...")
+        telegram_notifier.initialize_bot(config)
+        logger.info("   ✅ Telegram bot hazır\n")
+        
+        # 🆕 v11.0: HTF-LTF sistem - eski v10.6 sistem kaldırıldı
+        # if not initialize_v10_6_system():
+        #     logger.critical("❌ v10.6 sistem başlatılamadı!")
+        #     return 1
+        
+        # Trade Manager Thread Başlat
+        logger.info("🔧 Trade Manager thread başlatılıyor...")
+        global trade_manager_thread
+        
+        # RealTimeDataManager oluştur (trade manager için gerekli)
+        from src.data_fetcher.realtime_manager import RealTimeDataManager
+        realtime_data_manager = RealTimeDataManager(stop_event, config)
         
         trade_manager_thread = threading.Thread(
-            target=trade_manager.continuously_check_positions,
-            args=(realtime_manager_instance, open_positions_lock, stop_event, config),
-            name="TradeManagerThread",
-            daemon=True
+            target=continuously_check_positions,
+            args=(realtime_data_manager, open_positions_lock, stop_event, config),
+            daemon=True,
+            name="TradeManagerThread"
         )
         trade_manager_thread.start()
-        logger.info("✅ Trade Manager thread'i başarıyla başlatıldı (WebSocket modunda).")
-    except Exception as e:
-        logger.error(f"❌ Trade Manager başlatma hatası: {e}", exc_info=True)
-
-    scan_interval = getattr(config, 'SCAN_INTERVAL_MINUTES', 5)
-    logger.info(f"Ana tarama döngüsü her {scan_interval} dakikada bir çalışacak.")
-    schedule.every(scan_interval).minutes.do(main_scan_cycle)
-    
-    if capital_manager:
-        logger.info("Capital Manager saatlik kontrol için zamanlandı.")
-        schedule.every(1).hour.do(capital_manager.check_capital)
-    else:
-        logger.warning("⚠️ Capital Manager başlatılamadı, sermaye kontrolü yapılmayacak!")
-
-    logger.info("İlk tarama döngüsü manuel olarak başlatılıyor...")
-    main_scan_cycle()
-
-    logger.info("Zamanlanmış görev döngüsü başlatıldı. Çıkmak için Ctrl+C.")
-    
-    # YENİ: Düzeltilmiş ana döngü
-    try:
+        logger.info("   ✅ Trade Manager thread aktif\n")
+        
+        # 🆕 v10.8: Multi-Timeframe Scanner Thread Başlat
+        logger.info("🔍 Multi-Timeframe Scanner (15m + 30m) başlatılıyor...")
+        global scanner_thread
+        
+        scanner_thread = threading.Thread(
+            target=run_multi_timeframe_scanner,
+            args=(stop_event,),
+            daemon=True,
+            name="MultiTimeframeScanner"
+        )
+        scanner_thread.start()
+        logger.info("   ✅ Multi-Timeframe Scanner thread aktif\n")
+        
+        # 🆕 v10.9: Hybrid WebSocket Monitor Thread Başlat
+        logger.info("📡 Hybrid WebSocket Monitor başlatılıyor...")
+        global websocket_thread
+        
+        websocket_thread = threading.Thread(
+            target=run_hybrid_websocket_monitor,
+            args=(stop_event,),
+            daemon=True,
+            name="HybridWebSocketMonitor"
+        )
+        websocket_thread.start()
+        logger.info("   ✅ Hybrid WebSocket Monitor thread aktif\n")
+        
+        logger.info("🔄 Ana döngü başlatılıyor...")
+        logger.info("⏳ Hybrid sistem aktif: Scan + WebSocket monitoring...\n")
+        
+        stats_interval = 600
+        last_stats_time = time.time()
+        
         while not stop_event.is_set():
-            schedule.run_pending()
             time.sleep(1)
+            
+            if time.time() - last_stats_time > stats_interval:
+                log_hybrid_stats()
+                last_stats_time = time.time()
+        
     except KeyboardInterrupt:
-        logger.info("Ctrl+C algılandı. Kapanış...")
-        stop_event.set()
+        logger.info("\n⌨️  Keyboard interrupt")
+        graceful_shutdown(None, None)
     except Exception as e:
-        logger.error(f"Ana schedule döngüsü hatası: {e}", exc_info=True)
-        stop_event.set()
+        logger.critical(f"❌ Fatal error: {e}", exc_info=True)
+        return 1
     
-    # Graceful Shutdown
-    logger.info("Kapanış işlemleri yürütülüyor...")
-    
-    if trade_manager_thread and trade_manager_thread.is_alive():
-        logger.info("Trade Manager thread'inin bitmesi bekleniyor (max 10sn)...")
-        trade_manager_thread.join(timeout=10)
-        if trade_manager_thread.is_alive():
-            logger.warning("Trade Manager thread'i zamanında durmadı.")
-        else:
-            logger.info("Trade Manager thread'i durduruldu.")
+    return 0
 
-    if realtime_manager_thread and realtime_manager_thread.is_alive():
-        logger.info("RealTime Fiyat Yöneticisi thread'inin bitmesi bekleniyor (max 10sn)...")
-        realtime_manager_thread.join(timeout=10)
-        if realtime_manager_thread.is_alive():
-            logger.warning("RealTime Fiyat Yöneticisi thread'i zamanında durmadı.")
-        else:
-            logger.info("RealTime Fiyat Yöneticisi thread'i durduruldu.")
 
-    logger.info("Veritabanı bağlantısı kapatılıyor...")
-    try:
-        db_session.remove()
-        logger.info("✅ Veritabanı bağlantısı kapatıldı.")
-    except Exception as e:
-        logger.error(f"❌ Veritabanı kapatma hatası: {e}", exc_info=True)
-    
-    if telegram_initialized:
-        try:
-            stop_msg = f"ChimeraBot v{getattr(config, 'BOT_VERSION', '?.?')} durduruldu."
-            telegram_notifier.send_message(telegram_notifier.escape_markdown_v2(stop_msg))
-        except RuntimeError:
-            logger.warning("Kapanış mesajı gönderilemedi (event loop kapalı?).")
-        except Exception as e:
-            logger.error(f"Kapanış mesajı hatası: {e}")
-
-    logger.info(f"--- ChimeraBot Durduruldu ---")
+if __name__ == '__main__':
+    sys.exit(main())

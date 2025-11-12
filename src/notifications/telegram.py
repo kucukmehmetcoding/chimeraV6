@@ -89,7 +89,8 @@ def send_message(message_text: str):
         payload = {
             'chat_id': telegram_chat_id,
             'text': message_text,
-            'parse_mode': 'MarkdownV2'
+            # MarkdownV2 escape sorunlarını önlemek için plain text kullan
+            # 'parse_mode': 'MarkdownV2'  # Disabled
         }
         
         response = requests.post(url, json=payload, timeout=10)
@@ -140,6 +141,11 @@ def format_signal_message(signal_data: dict) -> str:
     position_size_usd = signal_data.get('position_size_usd', 0.0)  # Notional value (kaldıraçsız)
     position_size_units = signal_data.get('position_size_units', 0.0)
     
+    # v10.4: Margin-based TP/SL alanları (fast mode için)
+    initial_margin = signal_data.get('initial_margin')
+    tp_margin = signal_data.get('tp_margin')
+    sl_margin = signal_data.get('sl_margin')
+    
     # Gerçek margin (kullanılan sermaye)
     actual_margin_usd = position_size_usd / leverage
     
@@ -188,9 +194,38 @@ def format_signal_message(signal_data: dict) -> str:
     message += f"  • *Notional Değer:* \\${position_usd_str}\n"
     message += f"  • *Kullanılan Margin:* \\${margin_usd_str}\n\n"
     
-    message += f"*📈 Tahmini Sonuçlar:*\n"
+    # v10.4: Margin-based TP/SL gösterimi (fast mode için)
+    if initial_margin is not None and tp_margin is not None and sl_margin is not None:
+        init_margin_str = escape_markdown_v2(f"{initial_margin:.2f}")
+        tp_margin_str = escape_markdown_v2(f"{tp_margin:.2f}")
+        sl_margin_str = escape_markdown_v2(f"{sl_margin:.2f}")
+        margin_profit = tp_margin - initial_margin
+        margin_loss = initial_margin - sl_margin
+        margin_profit_str = escape_markdown_v2(f"{margin_profit:.2f}")
+        margin_loss_str = escape_markdown_v2(f"{margin_loss:.2f}")
+        
+        message += f"*📊 Margin Threshold \(Fast Mode\):*\n"
+        message += f"  • *Başlangıç:* \\${init_margin_str}\n"
+        message += f"  • *TP Threshold:* \\${tp_margin_str} \(\\+\\${margin_profit_str}\)\n"
+        message += f"  • *SL Threshold:* \\${sl_margin_str} \(\\-\\${margin_loss_str}\)\n\n"
+    
+    message += f"*📈 Tahmini Sonuçlar \(ATR Bazlı\):*\n"
     message += f"  • *Hedef Kar:* \\${profit_usd_str} \({profit_pct_str}\)\n"
     message += f"  • *Maksimum Zarar:* \\${loss_usd_str} \({loss_pct_str}\)\n"
+    
+    # ATR bilgisi ekle (eğer varsa)
+    atr_value = signal_data.get('atr_value')
+    if atr_value:
+        atr_str = escape_markdown_v2(f"{atr_value:.4f}")
+        tp_mult = signal_data.get('atr_tp_multiplier', 2.0)
+        sl_mult = signal_data.get('atr_sl_multiplier', 1.0)
+        tp_mult_str = escape_markdown_v2(f"{tp_mult:.1f}")
+        sl_mult_str = escape_markdown_v2(f"{sl_mult:.1f}")
+        message += f"\n*🎯 ATR Detayları:*\n"
+        message += f"  • *ATR\(14\):* {atr_str}\n"
+        message += f"  • *TP:* ATR × {tp_mult_str}\n"
+        message += f"  • *SL:* ATR × {sl_mult_str}\n"
+    
     message += f"*{escape_markdown_v2('━')}━━━━━━━━━━━━━━━━━━*\n"
     
     return message

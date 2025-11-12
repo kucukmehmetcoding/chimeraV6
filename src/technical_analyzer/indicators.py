@@ -307,3 +307,162 @@ def enhance_stochastic_rsi(df: pd.DataFrame) -> pd.DataFrame:
     except Exception as e:
         logger.error(f"Stochastic RSI geliştirme hatası: {e}", exc_info=True)
         return df
+
+
+def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
+    """
+    Calculate Average True Range (ATR) for volatility-based TP/SL
+    
+    Args:
+        df: DataFrame with OHLC data
+        period: ATR period (default: 14)
+    
+    Returns:
+        float: ATR value (latest)
+    """
+    try:
+        if df.empty or len(df) < period:
+            logger.warning(f"Insufficient data for ATR calculation (need {period}, got {len(df)})")
+            return 0.0
+        
+        # Ensure numeric types
+        high = pd.to_numeric(df['high'], errors='coerce')
+        low = pd.to_numeric(df['low'], errors='coerce')
+        close = pd.to_numeric(df['close'], errors='coerce')
+        
+        # Calculate True Range components
+        tr1 = high - low  # High - Low
+        tr2 = abs(high - close.shift())  # |High - Previous Close|
+        tr3 = abs(low - close.shift())   # |Low - Previous Close|
+        
+        # True Range = max of the three
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        # ATR = Simple Moving Average of TR
+        atr = tr.rolling(window=period).mean()
+        
+        # Return latest ATR value
+        latest_atr = atr.iloc[-1]
+        
+        if pd.isna(latest_atr) or latest_atr <= 0:
+            logger.warning(f"Invalid ATR value: {latest_atr}, returning 0")
+            return 0.0
+        
+        logger.debug(f"✅ ATR({period}) calculated: {latest_atr:.8f}")
+        return float(latest_atr)
+        
+    except Exception as e:
+        logger.error(f"ATR calculation error: {e}", exc_info=True)
+        return 0.0
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# v11.0: HTF-LTF Strategy Helper Functions
+# ═══════════════════════════════════════════════════════════════════════
+
+def add_htf_indicators(df: pd.DataFrame, timeframe: str = '1h') -> pd.DataFrame:
+    """
+    HTF (1H) için gerekli indicator'ları ekle
+    
+    Required indicators for HTF filter:
+    - EMA50
+    - RSI14
+    - MACD Histogram
+    
+    Args:
+        df: OHLCV DataFrame
+        timeframe: Timeframe string (for logging)
+    
+    Returns:
+        DataFrame with HTF indicators
+    """
+    if df is None or df.empty:
+        logger.warning(f"HTF indicators: Empty DataFrame for {timeframe}")
+        return df
+    
+    try:
+        logger.debug(f"⏳ Adding HTF indicators for {timeframe}...")
+        
+        # EMA50
+        df['ema50'] = talib.EMA(df['close'], timeperiod=50)
+        
+        # RSI14
+        df['rsi'] = talib.RSI(df['close'], timeperiod=14)
+        
+        # MACD
+        macd, macd_signal, macd_hist = talib.MACD(
+            df['close'], 
+            fastperiod=12, 
+            slowperiod=26, 
+            signalperiod=9
+        )
+        df['macd'] = macd
+        df['macd_signal'] = macd_signal
+        df['macd_hist'] = macd_hist
+        
+        logger.debug(f"✅ HTF indicators added for {timeframe}")
+        return df
+        
+    except Exception as e:
+        logger.error(f"HTF indicator calculation error: {e}", exc_info=True)
+        return df
+
+
+def add_ltf_indicators(df: pd.DataFrame, timeframe: str = '15m') -> pd.DataFrame:
+    """
+    LTF (15M) için gerekli indicator'ları ekle
+    
+    Required indicators for LTF trigger:
+    - EMA5, EMA20
+    - RSI14
+    - MACD Histogram
+    - ATR14
+    - Volume SMA20
+    
+    Args:
+        df: OHLCV DataFrame
+        timeframe: Timeframe string (for logging)
+    
+    Returns:
+        DataFrame with LTF indicators
+    """
+    if df is None or df.empty:
+        logger.warning(f"LTF indicators: Empty DataFrame for {timeframe}")
+        return df
+    
+    try:
+        logger.debug(f"⏳ Adding LTF indicators for {timeframe}...")
+        
+        # EMA5 ve EMA20
+        df['ema5'] = talib.EMA(df['close'], timeperiod=5)
+        df['ema20'] = talib.EMA(df['close'], timeperiod=20)
+        
+        # RSI14
+        df['rsi'] = talib.RSI(df['close'], timeperiod=14)
+        
+        # MACD
+        macd, macd_signal, macd_hist = talib.MACD(
+            df['close'], 
+            fastperiod=12, 
+            slowperiod=26, 
+            signalperiod=9
+        )
+        df['macd'] = macd
+        df['macd_signal'] = macd_signal
+        df['macd_hist'] = macd_hist
+        
+        # ATR14
+        df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
+        
+        # Volume SMA20
+        if df['volume'].dtype in ['float64', 'int64']:
+            df['volume_sma20'] = talib.SMA(df['volume'].astype(float), timeperiod=20)
+        else:
+            df['volume_sma20'] = np.nan
+        
+        logger.debug(f"✅ LTF indicators added for {timeframe}")
+        return df
+        
+    except Exception as e:
+        logger.error(f"LTF indicator calculation error: {e}", exc_info=True)
+        return df

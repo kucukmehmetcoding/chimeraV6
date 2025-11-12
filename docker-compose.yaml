@@ -4,6 +4,10 @@ services:
     container_name: chimerabot
     restart: unless-stopped
     environment:
+      # Trading Mode
+      - ENABLE_REAL_TRADING=${ENABLE_REAL_TRADING:-false}
+      - BINANCE_TESTNET=${BINANCE_TESTNET:-True}
+      
       # Binance API
       - BINANCE_API_KEY=${BINANCE_API_KEY}
       - BINANCE_SECRET_KEY=${BINANCE_SECRET_KEY}
@@ -28,9 +32,9 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
     
-    # Health check
+    # Health check - better validation
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; os.path.exists('/app/logs/chimerabot.log')"]
+      test: ["CMD-SHELL", "python -c 'import sys; sys.path.append(\"/app\"); from src.database.models import db_session, OpenPosition; db=db_session(); result=db.query(OpenPosition).count(); db_session.remove(); print(\"OK\")' 2>&1 | grep -q OK"]
       interval: 60s
       timeout: 10s
       retries: 3

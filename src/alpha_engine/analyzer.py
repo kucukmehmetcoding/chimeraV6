@@ -100,11 +100,14 @@ def calculate_quality_grade(symbol: str, config: object, direction: str) -> str:
     fng_contribution = 0
     if fng_index is not None:
         if direction == 'LONG':
-            if fng_index < 25: fng_contribution = 1.5   # Aşırı Korku (Contrarian)
+            # Minimal gevşetme: Aşırı korku eşiği 25 -> config.FNG_LONG_EXTREME_LOW (varsayılan 28)
+            extreme_low = getattr(config, 'FNG_LONG_EXTREME_LOW', 28)
+            if fng_index < extreme_low: fng_contribution = 1.5   # Aşırı Korku (Contrarian)
             elif fng_index < 45: fng_contribution = 0.5   # Korku
             elif fng_index > 75: fng_contribution = -1.5  # Aşırı Hırs (Riskli)
             elif fng_index > 55: fng_contribution = -0.5  # Hırs
         elif direction == 'SHORT':
+            # SHORT tarafı eşikleri şimdilik aynı bırakıldı
             if fng_index < 25: fng_contribution = -1.5  # Aşırı Korku (Riskli)
             elif fng_index < 45: fng_contribution = -0.5  # Korku
             elif fng_index > 75: fng_contribution = 1.5   # Aşırı Hırs (Contrarian)

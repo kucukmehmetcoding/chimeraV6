@@ -32,8 +32,11 @@ def find_recent_swing_levels(df: pd.DataFrame, lookback_period: int = 50) -> Opt
 def calculate_structural_sl_tp(direction: str, entry_price: float, levels: dict,
                                sl_buffer_percent: float, tp_buffer_percent: float) -> Optional[Dict[str, float]]:
     """
-    (ARTIK KULLANILMIYOR - ATR TABANLI SİSTEME GEÇİLDİ)
     Yapısal seviyelere göre SL/TP hesaplar.
+    
+    DÜZELTME v10.7:
+    - LONG: SL support altında, TP resistance üstünde
+    - SHORT: SL resistance üstünde, TP support altında
     """
     try:
         support = levels['support']
@@ -43,11 +46,11 @@ def calculate_structural_sl_tp(direction: str, entry_price: float, levels: dict,
         tp_price = 0.0
 
         if direction == 'LONG':
-            sl_price = support * (1 - (sl_buffer_percent / 100)) # Desteğin %x altı
-            tp_price = resistance * (1 - (tp_buffer_percent / 100)) # Direncin %x altı
+            sl_price = support * (1 - (sl_buffer_percent / 100))      # Support'un %x altı ✅
+            tp_price = resistance * (1 + (tp_buffer_percent / 100))   # Resistance'ın %x üstü ✅
         elif direction == 'SHORT':
-            sl_price = resistance * (1 + (sl_buffer_percent / 100)) # Direncin %x üstü
-            tp_price = support * (1 + (tp_buffer_percent / 100)) # Desteğin %x üstü
+            sl_price = resistance * (1 + (sl_buffer_percent / 100))   # Resistance'ın %x üstü ✅
+            tp_price = support * (1 - (tp_buffer_percent / 100))      # Support'un %x altı ✅
         
         if sl_price <= 0 or tp_price <= 0:
              logger.warning(f"Hesaplanan SL/TP geçersiz (<= 0). SL: {sl_price}, TP: {tp_price}")
@@ -369,7 +372,7 @@ def calculate_position_size_with_volatility(
             fixed_risk_usd = getattr(config, 'FIXED_RISK_USD', 5.0)
             
             # v9.2: MARGIN limitleri (position value DEĞİL!)
-            min_margin_usd = getattr(config, 'MIN_MARGIN_USD', 150.0)
+            min_margin_static = getattr(config, 'MIN_MARGIN_USD', 150.0)
             max_margin_usd = getattr(config, 'MAX_MARGIN_USD', 300.0)
             
             min_safety_margin = getattr(config, 'MINIMUM_SAFETY_MARGIN', 0.08)
@@ -413,20 +416,26 @@ def calculate_position_size_with_volatility(
             initial_margin_usd = position_value_usd / leverage
             
             # 🆕 v9.2 FIX: MARGIN BAZLI KONTROL (position value DEĞİL!)
-            # Kullanıcı: "Günde 1-2 pozisyon, kullanılan margin çok düşük (5 USD)"
-            # Çözüm: Minimum margin = 150 USD
-            
-            if initial_margin_usd < min_margin_usd:
-                logger.info(f"   � Kullanılan margin minimum altında: ${initial_margin_usd:.2f} < ${min_margin_usd:.2f}")
-                logger.info(f"   🔧 Margin minimum değere ayarlanıyor: ${min_margin_usd:.2f}")
-                
+            # Kullanıcı isteği: Minimum margin dinamik olmalı → en az (MIN_MARGIN_USD, 10$ × kaldıraç)
+            min_per_lev = getattr(config, 'MIN_PER_LEVERAGE_USD', 0.0)
+            # Kaldıraç ölçekli minimum kapatıldı → sadece sabit MIN_MARGIN_USD kullanılacak
+            effective_min_margin = min_margin_static  # Sabit alt sınır
+            # Üst sınır alt sınırdan küçükse, üst sınırı yükselt (güvenlik)
+            if max_margin_usd < effective_min_margin:
+                logger.debug(f"   ⚠️ MAX_MARGIN_USD ({max_margin_usd:.2f}) < effective_min_margin ({effective_min_margin:.2f}), üst sınır güncellendi")
+                max_margin_usd = effective_min_margin
+
+            if initial_margin_usd < effective_min_margin:
+                logger.info(f"   ⚙️ Kullanılan margin minimum altında: ${initial_margin_usd:.2f} < ${effective_min_margin:.2f} (Sabit Min)")
+                logger.info(f"   🔧 Margin minimum değere ayarlanıyor: ${effective_min_margin:.2f}")
+
                 # Margin'den position value hesapla
-                position_value_usd = min_margin_usd * leverage
+                position_value_usd = effective_min_margin * leverage
                 position_size_units = position_value_usd / entry_price
                 
                 # Risk yeniden hesapla (daha yüksek olacak)
                 actual_risk = position_size_units * sl_distance_usd
-                actual_margin_usd = min_margin_usd
+                actual_margin_usd = effective_min_margin
                 
                 logger.info(f"   💰 Pozisyon değeri: ${position_value_usd:.2f} ({leverage}x kaldıraç)")
                 logger.info(f"   ⚠️ Risk artışı: ${fixed_risk_usd:.2f} → ${actual_risk:.2f}")

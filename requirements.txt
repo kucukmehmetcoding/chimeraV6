@@ -6,7 +6,7 @@
 # ============================================================================
 
 # --- Core Trading & Data ---
-python-binance==1.0.32         # Binance API client
+python-binance>=1.0.32  # v10.6: WebSocket support required (ThreadedWebsocketManager)         # Binance API client
 pandas==2.1.4                   # Data manipulation (more stable)
 numpy==1.24.3                   # Numerical computing (stable for TA-Lib)
 TA-Lib==0.4.28                  # Technical analysis indicators

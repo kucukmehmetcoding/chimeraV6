@@ -83,6 +83,7 @@ class OpenPosition(Base):
     tp_price = Column(Float, nullable=False)
     rr_ratio = Column(Float)
     
+    amount = Column(Float, nullable=True)  # ✅ Pozisyon miktarı (coin cinsinden)
     position_size_units = Column(Float)
     final_risk_usd = Column(Float)
     planned_risk_percent = Column(Float)
@@ -90,6 +91,13 @@ class OpenPosition(Base):
     # --- YENİ: Gerçek Zamanlı Değerleme için (Aşama 1) ---
     leverage = Column(Integer, default=2)  # Kullanılan kaldıraç (1x-3x)
     # ------------------------------------------------------
+    
+    # --- 🆕 v10.4: Margin-based TP/SL ---
+    initial_margin = Column(Float, nullable=True)  # Başlangıç margin ($10)
+    tp_margin = Column(Float, nullable=True)       # TP threshold ($14)
+    sl_margin = Column(Float, nullable=True)       # SL threshold ($9)
+    # Fast mode için: Margin $14'e çıkınca TP, $9'a düşünce SL
+    # -----------------------------------------------
     
     correlation_group = Column(String(50))
     open_time = Column(BigInteger, default=lambda: int(time.time()))
@@ -146,6 +154,11 @@ class OpenPosition(Base):
     kelly_percent = Column(Float, nullable=True, comment="Kelly Criterion yüzdesi")
     kelly_confidence = Column(String(10), nullable=True, comment="Kelly güven seviyesi: HIGH/MEDIUM/LOW/NONE")
     risk_reasoning = Column(Text, nullable=True, comment="Risk hesaplama açıklaması")
+    
+    # v10.7 Hybrid kolonları
+    strategy_source = Column(String(20), nullable=True)  # v10.6, v10.7, etc.
+    hybrid_score = Column(Float, nullable=True)  # Confirmation score
+    execution_type = Column(String(20), nullable=True)  # market, limit, partial
     
     # Yeni kolonlar
     entry_order_id = Column(String, nullable=True)  # Binance entry order ID

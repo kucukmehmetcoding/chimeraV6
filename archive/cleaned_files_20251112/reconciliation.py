@@ -65,12 +65,13 @@ def reconcile_positions_on_startup(config) -> Dict[str, int]:
             return {'db_count': db_count, 'binance_count': 0, 'orphaned_count': 0, 'closed_symbols': []}
         
         # 3. Orphan pozisyonları tespit et (DB'de var ama Binance'te yok)
-        orphaned = []
+        # Not: DetachedInstanceError'ı önlemek için sadece id listesi taşıyoruz
+        orphaned_ids = []
         for symbol, db_pos in db_symbols.items():
             if symbol not in active_binance:
-                orphaned.append(db_pos)
+                orphaned_ids.append(db_pos.id)
         
-        if not orphaned:
+        if not orphaned_ids:
             logger.info("✅ Reconciliation: Tüm DB pozisyonları Binance ile senkron")
             return {
                 'db_count': db_count,
@@ -82,10 +83,21 @@ def reconcile_positions_on_startup(config) -> Dict[str, int]:
         # 4. Orphan pozisyonları kapat ve TradeHistory'e taşı
         closed_symbols = []
         with get_db_session() as db:
-            for orphan_pos in orphaned:
+            for orphan_id in orphaned_ids:
                 try:
+                    # Pozisyonu bu session içinde tazele
+                    orphan_pos = db.get(OpenPosition, orphan_id)
+                    if not orphan_pos:
+                        continue
+
                     # Gerçek kapanış fiyatını almaya çalış (trade history'den)
-                    close_price = _get_close_price_fallback(orphan_pos, executor)
+                    close_price = _get_close_price_fallback(
+                        symbol=orphan_pos.symbol,
+                        executor=executor,
+                        open_time=orphan_pos.open_time,
+                        sl_price=orphan_pos.sl_price,
+                        tp_price=orphan_pos.tp_price
+                    )
                     
                     # PnL hesapla
                     if orphan_pos.direction.upper() == 'LONG':
@@ -123,7 +135,11 @@ def reconcile_positions_on_startup(config) -> Dict[str, int]:
                     logger.warning(f"🧹 {orphan_pos.symbol}: Manuel kapatma tespit edildi, DB'den temizlendi (PnL: ${pnl_usd:.2f})")
                     
                 except Exception as e:
-                    logger.error(f"Orphan pozisyon temizlenemedi ({orphan_pos.symbol}): {e}")
+                    try:
+                        sym = orphan_pos.symbol if 'orphan_pos' in locals() and orphan_pos else 'UNKNOWN'
+                    except Exception:
+                        sym = 'UNKNOWN'
+                    logger.error(f"Orphan pozisyon temizlenemedi ({sym}): {e}")
             
             db.commit()
         
@@ -131,18 +147,18 @@ def reconcile_positions_on_startup(config) -> Dict[str, int]:
         if closed_symbols:
             try:
                 msg = f"🧹 *Reconciliation Sonucu*\n\n"
-                msg += f"DB'de {len(orphaned)} orphan pozisyon tespit edildi ve temizlendi:\n"
+                msg += f"DB'de {len(orphaned_ids)} orphan pozisyon tespit edildi ve temizlendi:\n"
                 msg += "\n".join([f"• {s}" for s in closed_symbols])
                 msg += f"\n\n_Not: Bu pozisyonlar Binance'te manuel kapatılmış olabilir._"
                 telegram_notifier.send_message(msg)
             except Exception:
                 pass
         
-        logger.info(f"✅ Reconciliation tamamlandı: {len(orphaned)} orphan pozisyon temizlendi")
+        logger.info(f"✅ Reconciliation tamamlandı: {len(orphaned_ids)} orphan pozisyon temizlendi")
         return {
             'db_count': db_count,
             'binance_count': binance_count,
-            'orphaned_count': len(orphaned),
+            'orphaned_count': len(orphaned_ids),
             'closed_symbols': closed_symbols
         }
         
@@ -151,33 +167,35 @@ def reconcile_positions_on_startup(config) -> Dict[str, int]:
         return {'db_count': 0, 'binance_count': 0, 'orphaned_count': 0, 'closed_symbols': []}
 
 
-def _get_close_price_fallback(pos: OpenPosition, executor) -> float:
+def _get_close_price_fallback(symbol: str, executor, open_time: int = None, sl_price: float = None, tp_price: float = None) -> float:
     """
     Orphan pozisyon için kapanış fiyatını tahmin et.
     Önce trade history'den al, yoksa güncel market fiyatını kullan.
     """
     try:
         # Trade history'den gerçek close price'ı bul
-        if executor.binance_client:
-            trades = executor.binance_client.futures_account_trades(
-                symbol=pos.symbol,
+        if executor and getattr(executor, 'client', None):
+            trades = executor.client.futures_account_trades(
+                symbol=symbol,
                 limit=100
             )
             # Açılış zamanından sonraki ilk PnL realize eden trade
             for trade in reversed(trades):  # En yeniden başla
-                if int(trade['time']) > pos.open_time * 1000 and float(trade.get('realizedPnl', 0)) != 0:
+                if (open_time is None or int(trade['time']) > int(open_time) * 1000) and float(trade.get('realizedPnl', 0)) != 0:
                     return float(trade['price'])
     except Exception as e:
-        logger.debug(f"Trade history okunamadı ({pos.symbol}): {e}")
+        logger.debug(f"Trade history okunamadı ({symbol}): {e}")
     
     # Fallback: güncel market fiyatı
     try:
         from src.data_fetcher.binance_fetcher import get_current_price
-        current = get_current_price(pos.symbol)
+        current = get_current_price(symbol)
         if current:
             return current
     except Exception:
         pass
     
     # Son fallback: TP veya SL ortalaması
-    return (pos.tp_price + pos.sl_price) / 2.0
+    if tp_price is not None and sl_price is not None:
+        return (tp_price + sl_price) / 2.0
+    return 0.0
