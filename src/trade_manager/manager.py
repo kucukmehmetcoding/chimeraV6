@@ -1171,7 +1171,13 @@ def place_real_order(signal_data):
             logger.error("❌ Executor client bulunamadı - Binance bağlantısı yok!")
             return None
 
-        # 1. Market emri ile pozisyon aç (entry_price yerine MARKET kullan, Futures'ta daha hızlı)
+        # 0.1. Precision kontrolü - quantity ve fiyatları Binance kurallarına göre yuvarla
+        quantity = executor.round_quantity(symbol, quantity)
+        tp_price = executor.round_price(symbol, tp_price)
+        sl_price = executor.round_price(symbol, sl_price)
+        
+        logger.info(f"   ✅ Precision uygulandı: Qty={quantity}, TP=${tp_price}, SL=${sl_price}")
+
         # 1. Market emri ile pozisyon aç (entry_price yerine MARKET kullan, Futures'ta daha hızlı)
         entry_order = executor.client.futures_create_order(
             symbol=symbol,
@@ -1188,7 +1194,7 @@ def place_real_order(signal_data):
             side=close_side,
             type='LIMIT',
             quantity=quantity,
-            price=str(tp_price),
+            price=tp_price,  # Artık rounded, str() gereksiz
             timeInForce='GTC',
             reduceOnly='true'
         )
@@ -1196,12 +1202,11 @@ def place_real_order(signal_data):
         logger.info(f"✅ TP emri yerleştirildi: OrderID={tp_order['orderId']} @ ${tp_price}")
         
         # 3. Stop Loss emri (STOP_MARKET, reduceOnly)
-        # 3. Stop Loss emri (STOP_MARKET, reduceOnly)
         sl_order = executor.client.futures_create_order(
             symbol=symbol,
             side=close_side,
             type='STOP_MARKET',
-            stopPrice=str(sl_price),
+            stopPrice=sl_price,  # Artık rounded, str() gereksiz
             quantity=quantity,
             reduceOnly='true'
         )
