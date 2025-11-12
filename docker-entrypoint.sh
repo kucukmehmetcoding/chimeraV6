@@ -32,10 +32,11 @@ fi
 # Create directories if they don't exist
 mkdir -p /app/data /app/logs
 
-echo "🔄 Running database migrations..."
-# Run migrations to ensure schema is up to date
-python3 /app/migrations/add_amount_column.py || true
-echo "✅ Migrations complete"
+echo "🔄 Initializing database schema..."
+# Use SQLAlchemy's create_all() to ensure all tables/columns exist
+# This is idempotent - won't drop existing data, just adds missing tables/columns
+python3 /app/create_database.py
+echo "✅ Database schema ready"
 
 echo "🎯 Starting ChimeraBot..."
 # Execute the main command
