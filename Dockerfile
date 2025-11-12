@@ -62,9 +62,14 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p /app/data /app/logs
 
+# Copy and set entrypoint script
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
 # Run DB migrations (ensure schema is up to date)
 # || true ensures build continues even if migration fails
 RUN python3 migrations/add_advanced_risk_columns.py || true
+RUN python3 migrations/add_amount_column.py || true
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
@@ -84,6 +89,9 @@ ENV BINANCE_SECRET_KEY=${BINANCE_SECRET_KEY}
 ENV TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
 ENV TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
 ENV BINANCE_TESTNET=${BINANCE_TESTNET}
+
+# Set entrypoint
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 # Run the bot
 CMD ["python", "-m", "src.main_orchestrator"]

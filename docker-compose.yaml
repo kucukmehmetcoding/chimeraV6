@@ -8,6 +8,9 @@ services:
       - ENABLE_REAL_TRADING=${ENABLE_REAL_TRADING:-false}
       - BINANCE_TESTNET=${BINANCE_TESTNET:-True}
       
+      # Clean Start (set to 'true' to wipe all cached data on startup)
+      - FORCE_CLEAN_START=${FORCE_CLEAN_START:-false}
+      
       # Binance API
       - BINANCE_API_KEY=${BINANCE_API_KEY}
       - BINANCE_SECRET_KEY=${BINANCE_SECRET_KEY}

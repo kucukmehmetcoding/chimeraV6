@@ -269,11 +269,35 @@ Then **Restart** the application in Coolify.
 ### Database Errors
 **Symptom:** SQLAlchemy errors in logs
 
+**Common Error:**
+```
+sqlite3.OperationalError: no such column: open_positions.amount
+```
+
 **Solution:**
-1. Verify volume mount: `./data:/app/data`
-2. Check directory permissions (should be writable)
-3. Delete corrupted database: `rm data/chimerabot.db`
-4. Restart container (will recreate DB)
+1. **Option 1 - Clean Start (Recommended for fresh deployment):**
+   ```bash
+   # Set environment variable in Coolify
+   FORCE_CLEAN_START=true
+   ```
+   Then redeploy. This will wipe old database and create fresh one.
+
+2. **Option 2 - Manual Database Delete:**
+   ```bash
+   # In Coolify terminal
+   rm /app/data/chimerabot.db
+   ```
+   Then restart container. Migration will create proper schema.
+
+3. **Option 3 - Auto-Migration (Already Included):**
+   - Entrypoint script runs `add_amount_column.py` on startup
+   - Should fix schema automatically
+   - If not working, check logs for migration errors
+
+**Prevention:**
+- Always use `FORCE_CLEAN_START=true` for major version upgrades
+- Check migration scripts in `/app/migrations/` directory
+- Verify volume mount: `./data:/app/data`
 
 ### High Memory Usage
 **Symptom:** Container using >1GB RAM
