@@ -187,8 +187,8 @@ MAX_POSITIONS_PER_SYMBOL = int(os.getenv("MAX_POSITIONS_PER_SYMBOL", 1))
 
 # 🆕 v11.3: CONFLUENCE SCORING SYSTEM
 # Multi-timeframe kalite skoru: HTF (1H) + LTF (15M) + Sentiment
-# Max score: ~8.6/10 → Minimum 7.0 gerekli (win rate optimization)
-MIN_CONFLUENCE_SCORE = float(os.getenv("MIN_CONFLUENCE_SCORE", 7.0))  # Minimum confluence threshold
+# Max score: ~8.6/10 → Minimum 5.0 gerekli (win rate optimization)
+MIN_CONFLUENCE_SCORE = float(os.getenv("MIN_CONFLUENCE_SCORE", 5.0))  # v11.3.2: 7.0 → 5.0 for balanced signal flow
 
 # 🔄 BREAKOUT L1 scalp fallback toggle
 ENABLE_BREAKOUT_SCALP_FALLBACK = os.getenv("ENABLE_BREAKOUT_SCALP_FALLBACK", "True").lower() == "true"
