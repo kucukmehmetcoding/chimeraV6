@@ -813,9 +813,9 @@ USE_ATR_BASED_TP_SL = os.getenv("USE_ATR_BASED_TP_SL", "True").lower() == "true"
 ATR_PERIOD = int(os.getenv("ATR_PERIOD", 14))  # ATR hesaplama periyodu
 ATR_TIMEFRAME = os.getenv("ATR_TIMEFRAME", "15m")  # ATR için timeframe
 
-# ATR Multipliers (Conservative → Moderate: R:R = 2.0, daha dar SL)
-ATR_TP_MULTIPLIER = float(os.getenv("ATR_TP_MULTIPLIER", 2.0))  # TP = ATR × 2.0
-ATR_SL_MULTIPLIER = float(os.getenv("ATR_SL_MULTIPLIER", 1.0))  # SL = ATR × 1.0 (v11.1: 1.2 → 1.0, %17 azalma)
+# ATR Multipliers (v11.3: Restored to original values for better TP hit rate)
+ATR_TP_MULTIPLIER = float(os.getenv("ATR_TP_MULTIPLIER", 4.0))  # TP = ATR × 4.0 (was 2.0 in v11.1)
+ATR_SL_MULTIPLIER = float(os.getenv("ATR_SL_MULTIPLIER", 2.0))  # SL = ATR × 2.0 (was 1.0 in v11.1)
 
 # ATR Risk Management (v11.1: SL limitleri güncellendi)
 MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 1.5))  # Minimum R:R 1.5:1
