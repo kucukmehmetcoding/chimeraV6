@@ -78,6 +78,9 @@ def analyze_news_with_gemini(
         base_symbol = symbol.replace('USDT', '').replace('BUSD', '')
         
         prompt = f"""
+EDUCATIONAL ANALYSIS ONLY - NOT INVESTMENT ADVICE
+This is a cryptocurrency market analysis exercise for research purposes.
+
 Analyze these crypto news headlines for {base_symbol}:
 
 {headlines_text}
@@ -178,6 +181,9 @@ def get_market_context_from_gemini(
         
         # Build prompt
         prompt = f"""
+EDUCATIONAL MARKET ANALYSIS - NOT TRADING ADVICE
+This is a cryptocurrency market research exercise for educational purposes.
+
 Analyze current crypto market conditions:
 
 **Bitcoin (Market Leader):**
@@ -281,6 +287,9 @@ def validate_signal_with_gemini(
         base_symbol = symbol.replace('USDT', '').replace('BUSD', '')
         
         prompt = f"""
+EDUCATIONAL ANALYSIS ONLY - NOT FINANCIAL ADVICE
+This is a technical analysis exercise for a trading simulation system.
+
 Validate this crypto trading signal:
 
 **Symbol:** {base_symbol}
