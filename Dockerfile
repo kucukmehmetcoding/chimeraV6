@@ -1,6 +1,6 @@
 # ChimeraBot Dockerfile - Coolify Deployment
 # Python 3.11 with TA-Lib support
-# v11.3.2 - Confluence threshold 5.0 + ATR restored (CACHE BUST)
+# v11.4.0 - Confluence-Based TP/SL System (CACHE BUST)
 
 FROM python:3.11-slim
 
