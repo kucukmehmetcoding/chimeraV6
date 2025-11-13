@@ -1241,12 +1241,89 @@ def execute_multi_timeframe_position(symbol: str, signal: dict) -> bool:
             logger.warning(f"⚠️ Continuing without confluence filtering...")
             confluence_data = None
         
-        # 1. TP/SL hesapla
+        # 🤖 v11.5: GEMINI AI SIGNAL VALIDATION
+        gemini_approved = True
+        gemini_tp_adjustment = 1.0
+        gemini_sl_adjustment = 1.0
+        
+        if gemini_strategies and config.GEMINI_SIGNAL_VALIDATION:
+            logger.info(f"🤖 Requesting Gemini AI validation...")
+            try:
+                # Prepare technical data
+                technical_data = {
+                    'h1_trend': 'BULLISH' if confluence_data and confluence_data.get('htf_score', 0) > 3 else 'BEARISH',
+                    'm15_trend': 'BULLISH' if confluence_data and confluence_data.get('ltf_score', 0) > 2 else 'BEARISH',
+                    'rsi': df_15m.iloc[-1]['rsi14'] if df_15m is not None and 'rsi14' in df_15m.columns else 50,
+                    'macd_status': 'Bullish' if df_15m is not None and 'macd_hist' in df_15m.columns and df_15m.iloc[-1]['macd_hist'] > 0 else 'Bearish',
+                    'ema_aligned': df_15m.iloc[-1]['ema5'] > df_15m.iloc[-1]['ema20'] if df_15m is not None and 'ema5' in df_15m.columns and 'ema20' in df_15m.columns else False,
+                    'adx': df_15m.iloc[-1]['adx14'] if df_15m is not None and 'adx14' in df_15m.columns else 20,
+                    'volume_status': 'Above Average' if df_15m is not None and df_15m.iloc[-1]['volume'] > df_15m['volume'].rolling(20).mean().iloc[-1] * 1.2 else 'Normal'
+                }
+                
+                # Get sentiment scores
+                sentiment_scores = get_sentiment_scores(symbol)
+                
+                # Call Gemini validator
+                gemini_result = gemini_strategies.validate_signal_with_gemini(
+                    symbol=symbol,
+                    direction=direction,
+                    technical_data=technical_data,
+                    sentiment_scores=sentiment_scores,
+                    confluence_score=confluence_data['total_score'] if confluence_data else 5.0,
+                    config=config
+                )
+                
+                if gemini_result:
+                    decision = gemini_result.get('decision', 'APPROVED')
+                    gemini_confidence = gemini_result.get('confidence', 5.0)
+                    
+                    logger.info(f"   🤖 Gemini Decision: {decision} (Confidence: {gemini_confidence}/10)")
+                    logger.info(f"      Reasoning: {gemini_result.get('reasoning', 'N/A')}")
+                    
+                    if decision == 'REJECTED':
+                        logger.warning(f"❌ GEMINI REJECTED SIGNAL: {gemini_result.get('reasoning')}")
+                        return False
+                    
+                    elif decision == 'CAUTION':
+                        logger.warning(f"⚠️ GEMINI CAUTION: Reducing confidence")
+                        confidence *= 0.85  # 15% penalty
+                        if confluence_data:
+                            confluence_data['total_score'] *= 0.9  # Also reduce confluence
+                    
+                    # Apply TP/SL adjustments
+                    gemini_tp_adjustment = gemini_result.get('tp_adjustment', 1.0)
+                    gemini_sl_adjustment = gemini_result.get('sl_adjustment', 1.0)
+                    
+                    if gemini_tp_adjustment != 1.0 or gemini_sl_adjustment != 1.0:
+                        logger.info(f"   🎯 Gemini TP/SL Adjustments: TP×{gemini_tp_adjustment:.2f}, SL×{gemini_sl_adjustment:.2f}")
+                
+            except Exception as gemini_error:
+                logger.warning(f"⚠️ Gemini validation failed: {gemini_error}")
+                logger.info("   Proceeding without AI validation...")
+        
+        # 1. TP/SL hesapla (Gemini adjustments ile)
         sl_price, tp_price = calculate_hybrid_sl_tp(symbol, direction, entry_price, confidence)
         
         if not sl_price or not tp_price:
             logger.error(f"❌ SL/TP hesaplanamadı: {symbol}")
             return False
+        
+        # Apply Gemini adjustments
+        if gemini_tp_adjustment != 1.0:
+            tp_distance = abs(tp_price - entry_price)
+            if direction == 'LONG':
+                tp_price = entry_price + (tp_distance * gemini_tp_adjustment)
+            else:
+                tp_price = entry_price - (tp_distance * gemini_tp_adjustment)
+            logger.info(f"   🤖 Adjusted TP: ${tp_price:.6f} (×{gemini_tp_adjustment:.2f})")
+        
+        if gemini_sl_adjustment != 1.0:
+            sl_distance = abs(entry_price - sl_price)
+            if direction == 'LONG':
+                sl_price = entry_price - (sl_distance * gemini_sl_adjustment)
+            else:
+                sl_price = entry_price + (sl_distance * gemini_sl_adjustment)
+            logger.info(f"   🤖 Adjusted SL: ${sl_price:.6f} (×{gemini_sl_adjustment:.2f})")
         
         # 2. Position size hesapla
         position_size = calculate_position_size(symbol, entry_price, sl_price, confidence)
