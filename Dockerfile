@@ -1,6 +1,6 @@
 # ChimeraBot Dockerfile - Coolify Deployment
 # Python 3.11 with TA-Lib support
-# v11.2.3 - Precision fix for Binance orders
+# v11.3.2 - Confluence threshold 5.0 + ATR restored (CACHE BUST)
 
 FROM python:3.11-slim
 
