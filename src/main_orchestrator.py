@@ -97,6 +97,14 @@ try:
         ai_client = None
         gemini_strategies = None
     
+    # 📰 v11.7: Automated News Analyzer
+    try:
+        from src.alpha_engine.coin_news_analyzer import AutomatedNewsAnalyzer
+        logger.info("✅ Automated News Analyzer module loaded")
+    except ImportError as e:
+        logger.warning(f"⚠️ News Analyzer not available: {e}")
+        AutomatedNewsAnalyzer = None
+    
     # 🆕 v10.8: Multi-Timeframe Analyzer (DEPRECATED - using HTF-LTF now)
     # from src.technical_analyzer.multi_timeframe_analyzer import (
     #     check_multi_timeframe_entry,
@@ -116,6 +124,7 @@ stop_event = threading.Event()
 trade_manager_thread = None
 scanner_thread = None  # 🆕 v10.8: Multi-timeframe scanner thread
 websocket_thread = None  # 🆕 v10.9: Hybrid WebSocket thread
+news_analyzer_instance = None  # 📰 v11.7: Automated news analyzer
 
 # 🆕 v10.9: Hybrid System - Proximity Watchlist
 proximity_watchlist = {}  # {symbol: {distance_percent, direction_bias, ema5, ema20, close}}
@@ -1696,6 +1705,16 @@ def graceful_shutdown(signum, frame):
         scanner_thread.join(timeout=5)
         logger.info("   ✅ Scanner durduruldu")
     
+    # 📰 v11.7: News Analyzer'ı durdur
+    global news_analyzer_instance
+    if news_analyzer_instance:
+        try:
+            logger.info("📰 News Analyzer durduruluyor...")
+            news_analyzer_instance.stop_automated_analysis()
+            logger.info("   ✅ News Analyzer durduruldu")
+        except Exception as e:
+            logger.warning(f"   ⚠️ News Analyzer durdurulurken hata: {e}")
+    
     log_hybrid_stats()
     logger.info("\n✅ Shutdown tamamlandı!")
     sys.exit(0)
@@ -1739,6 +1758,25 @@ def main():
                 logger.warning("   ⚠️ AI System başlatılamadı - Sadece VADER kullanılacak\n")
         else:
             logger.info("ℹ️  Gemini AI devre dışı - Sadece VADER kullanılacak\n")
+        
+        # 📰 v11.7: Automated News Analyzer Başlat (Background thread)
+        global news_analyzer_instance
+        if AutomatedNewsAnalyzer and config.NEWS_ANALYZER_ENABLED:
+            logger.info("📰 Automated News Analyzer başlatılıyor...")
+            try:
+                news_analyzer_instance = AutomatedNewsAnalyzer(
+                    check_interval_hours=config.NEWS_CHECK_INTERVAL_HOURS
+                )
+                news_analyzer_instance.start_automated_analysis()
+                logger.info(f"   ✅ News Analyzer aktif (interval: {config.NEWS_CHECK_INTERVAL_HOURS}h)")
+                logger.info(f"   🌐 RSS feeds: {len(config.SENTIMENT_RSS_FEEDS)}")
+                logger.info(f"   😨 Fear & Greed Index: Enabled")
+                logger.info(f"   🤖 AI Analysis: DeepSeek\n")
+            except Exception as na_error:
+                logger.warning(f"   ⚠️ News Analyzer başlatılamadı: {na_error}")
+                news_analyzer_instance = None
+        else:
+            logger.info("ℹ️  Automated News Analyzer devre dışı\n")
         
         # 🚨 v11.2: Binance Futures Executor Başlat (REAL TRADING için gerekli!)
         if config.ENABLE_REAL_TRADING:

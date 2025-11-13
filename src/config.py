@@ -98,6 +98,18 @@ AI_RETRY_ATTEMPTS = int(os.getenv("AI_RETRY_ATTEMPTS", 2))
 AI_NEWS_CACHE_MINUTES = int(os.getenv("AI_NEWS_CACHE_MINUTES", 30))  # Cache news analysis
 AI_MARKET_CONTEXT_CACHE_MINUTES = int(os.getenv("AI_MARKET_CONTEXT_CACHE_MINUTES", 15))  # Cache market regime
 
+# ============================================================================
+# 📰 AUTOMATED NEWS ANALYZER (v11.7: DeepSeek Market Sentiment)
+# ============================================================================
+
+# --- News Analyzer Settings ---
+NEWS_ANALYZER_ENABLED = os.getenv("NEWS_ANALYZER_ENABLED", "True").lower() == "true"  # Master switch
+NEWS_CHECK_INTERVAL_HOURS = int(os.getenv("NEWS_CHECK_INTERVAL_HOURS", 4))  # How often to analyze market
+NEWS_MAX_ARTICLES = int(os.getenv("NEWS_MAX_ARTICLES", 30))  # Articles per analysis
+
+# News feeds are already defined below as SENTIMENT_RSS_FEEDS (8 sources)
+# Fear & Greed API: https://api.alternative.me/fng/ (no auth required)
+
 # --- AI Response Thresholds ---
 AI_MIN_CONFIDENCE_FOR_APPROVAL = float(os.getenv("AI_MIN_CONFIDENCE_FOR_APPROVAL", 6.0))  # 0-10 scale
 AI_REJECTION_THRESHOLD = float(os.getenv("AI_REJECTION_THRESHOLD", 4.0))  # Below this = reject signal
