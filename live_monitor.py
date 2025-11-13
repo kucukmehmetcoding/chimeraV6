@@ -6,6 +6,7 @@ Gerçek zamanlı pozisyon takibi için basit script
 
 import time
 import sys
+import os
 from datetime import datetime
 
 from src.database.models import db_session, OpenPosition, TradeHistory
@@ -23,8 +24,8 @@ def format_price(price):
         return f"${price:.2f}"  # Büyük: 2 desimal
 
 def clear_screen():
-    """Ekranı temizle"""
-    print("\033[2J\033[H", end="")
+    """Ekranı gerçekten temizle - OS bazlı"""
+    os.system('clear' if os.name == 'posix' else 'cls')
 
 def monitor_loop(interval=5):
     """Sürekli monitoring döngüsü"""
@@ -32,17 +33,19 @@ def monitor_loop(interval=5):
     while True:
         clear_screen()
         
-        print("="*80)
-        print(f"📊 CHIMERABOT LIVE MONITOR - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print("="*80)
+        # String buffer oluştur (tüm output tek seferde yazılacak)
+        output = []
+        output.append("="*80)
+        output.append(f"📊 CHIMERABOT LIVE MONITOR - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        output.append("="*80)
         
         db = db_session()
         try:
             # AÇIK POZİSYONLAR
             positions = db.query(OpenPosition).all()
             
-            print(f"\n🔴 AÇIK POZİSYONLAR: {len(positions)}")
-            print("-"*80)
+            output.append(f"\n🔴 AÇIK POZİSYONLAR: {len(positions)}")
+            output.append("-"*80)
             
             total_unrealized = 0
             
@@ -51,7 +54,7 @@ def monitor_loop(interval=5):
                     current_price = get_current_price(pos.symbol)
                     
                     if current_price:
-                        # PnL hesapla (DÜZELTME v11.1: Leverage çarpımı kaldırıldı - yüzde spot bazlı, USD kaldıraçlı)
+                        # PnL hesapla
                         if pos.direction == 'LONG':
                             pnl_pct = ((current_price - pos.entry_price) / pos.entry_price) * 100
                             pnl_usd = (current_price - pos.entry_price) * pos.amount * pos.leverage
@@ -63,14 +66,14 @@ def monitor_loop(interval=5):
                         
                         pnl_color = "🟢" if pnl_usd >= 0 else "🔴"
                         
-                        print(f"\n{idx}. {pos.symbol} - {pos.direction} {pos.leverage}x")
-                        print(f"   Entry: {format_price(pos.entry_price)} → Current: {format_price(current_price)}")
-                        print(f"   {pnl_color} PnL: ${pnl_usd:.2f} ({pnl_pct:.2f}%)")
-                        print(f"   SL: {format_price(pos.sl_price)} | TP: {format_price(pos.tp_price)}")
+                        output.append(f"\n{idx}. {pos.symbol} - {pos.direction} {pos.leverage}x")
+                        output.append(f"   Entry: {format_price(pos.entry_price)} → Current: {format_price(current_price)}")
+                        output.append(f"   {pnl_color} PnL: ${pnl_usd:.2f} ({pnl_pct:.2f}%)")
+                        output.append(f"   SL: {format_price(pos.sl_price)} | TP: {format_price(pos.tp_price)}")
                 
-                print(f"\n💵 Toplam Gerçekleşmemiş PnL: ${total_unrealized:.2f}")
+                output.append(f"\n💵 Toplam Gerçekleşmemiş PnL: ${total_unrealized:.2f}")
             else:
-                print("❌ Açık pozisyon yok")
+                output.append("❌ Açık pozisyon yok")
             
             # TRADE İSTATİSTİKLERİ
             all_trades = db.query(TradeHistory).all()
@@ -82,22 +85,25 @@ def monitor_loop(interval=5):
                 total = wins + losses
                 win_rate = (wins / total * 100) if total > 0 else 0
                 
-                print(f"\n📈 GENEL İSTATİSTİKLER")
-                print("-"*80)
-                print(f"💰 Gerçekleşen Toplam PnL: ${total_pnl:.2f}")
-                print(f"📊 Toplam Trade: {total} (✅ {wins} | ❌ {losses})")
-                print(f"🎯 Win Rate: {win_rate:.1f}%")
+                output.append(f"\n📈 GENEL İSTATİSTİKLER")
+                output.append("-"*80)
+                output.append(f"💰 Gerçekleşen Toplam PnL: ${total_pnl:.2f}")
+                output.append(f"📊 Toplam Trade: {total} (✅ {wins} | ❌ {losses})")
+                output.append(f"🎯 Win Rate: {win_rate:.1f}%")
                 
                 # NET TOPLAM
                 net_total = total_pnl + total_unrealized
-                print(f"\n💎 NET TOPLAM PnL: ${net_total:.2f}")
+                output.append(f"\n💎 NET TOPLAM PnL: ${net_total:.2f}")
             
         finally:
             db_session.remove()
         
-        print("\n" + "="*80)
-        print(f"⏱️  Sonraki güncelleme {interval} saniye sonra... (Ctrl+C ile çıkış)")
-        print("="*80)
+        output.append("\n" + "="*80)
+        output.append(f"⏱️  Sonraki güncelleme {interval} saniye sonra... (Ctrl+C ile çıkış)")
+        output.append("="*80)
+        
+        # Tek seferde tüm output'u yaz
+        print("\n".join(output), flush=True)
         
         time.sleep(interval)
 
