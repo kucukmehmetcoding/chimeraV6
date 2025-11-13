@@ -163,8 +163,17 @@ def call_gemini_api(
         prompt_preview = prompt[:100] + "..." if len(prompt) > 100 else prompt
         logger.debug(f"🤖 Gemini request #{_request_count}: {prompt_preview}")
         
-        # Generate response
+        # Generate response with safety settings
         start_time = time.time()
+        
+        # Safety settings: BLOCK_NONE for all categories (crypto trading content)
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
+        
         response = _gemini_model.generate_content(
             prompt,
             generation_config={
@@ -172,13 +181,27 @@ def call_gemini_api(
                 'top_p': 0.95,
                 'top_k': 40,
                 'max_output_tokens': 1024,
-            }
+            },
+            safety_settings=safety_settings
         )
         
         elapsed = time.time() - start_time
         logger.debug(f"   Response time: {elapsed:.2f}s")
         
-        # Extract text
+        # Extract text with safety check
+        if not hasattr(response, 'text'):
+            logger.warning(f"⚠️ Gemini response blocked (finish_reason: {response.candidates[0].finish_reason})")
+            logger.warning(f"   Safety ratings: {response.candidates[0].safety_ratings}")
+            
+            # Return fallback for safety blocks
+            if parse_json:
+                return {
+                    'decision': 'APPROVED',  # Default to approval when blocked
+                    'confidence': 6.0,
+                    'reasoning': 'Safety filter triggered, defaulting to technical analysis only'
+                }
+            return None
+        
         if not response.text:
             logger.warning("Empty response from Gemini")
             return None
