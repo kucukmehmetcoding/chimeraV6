@@ -199,7 +199,7 @@ New R:R: $4.8 / $1.8 = 2.67:1 (was 2.0:1)
 ```env
 # Gemini AI Configuration (v11.5)
 GEMINI_API_KEY=AIzaSyXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-GEMINI_MODEL=gemini-1.5-flash  # flash=faster/cheaper, pro=better
+GEMINI_MODEL=gemini-2.5-flash  # flash=faster/cheaper, pro=better (Nov 2025: v2.5 latest)
 
 # Enable/Disable Features
 GEMINI_ENABLED=True
@@ -442,6 +442,14 @@ Bot will revert to VADER-only sentiment and skip AI validation.
 ### "Gemini initialization failed"
 **Cause:** Invalid API key
 **Fix:** Check GEMINI_API_KEY in .env, regenerate if needed
+
+### "404 models/gemini-1.5-flash not found"
+**Cause:** Old model name (deprecated in Nov 2025)
+**Fix:** Update config.py → `GEMINI_MODEL = "gemini-2.5-flash"`
+
+### "finish_reason=2" or "RECITATION" error
+**Cause:** Safety filter triggered by prompt content
+**Fix:** Non-critical, retry automatic. Market context may be affected, signal validation still works.
 
 ### "Rate limit exceeded"
 **Cause:** >15 requests/minute
