@@ -321,6 +321,69 @@ def calculate_atr_based_sl_tp(symbol: str, direction: str, entry_price: float, s
         return calculate_fixed_sl_tp(symbol, direction, entry_price, score)
 
 
+def calculate_confluence_based_sl_tp(symbol: str, direction: str, entry_price: float, confluence_score: float) -> tuple:
+    """
+    🎯 v11.4 CONFLUENCE-BASED TP/SL SİSTEMİ
+    
+    Sinyal kalitesine göre dinamik TP/SL:
+    - A-grade (8.0-10.0): Geniş targets → SL: $2.5, TP: $6.0 (R:R = 2.4)
+    - B-grade (6.5-7.9): Dengeli targets → SL: $2.0, TP: $4.0 (R:R = 2.0)
+    - C-grade (5.0-6.4): Muhafazakar targets → SL: $1.5, TP: $3.0 (R:R = 2.0)
+    
+    Avantajlar:
+    - Kaliteli sinyaller daha fazla kar potansiyeli
+    - Zayıf sinyaller hızlı çıkış
+    - ATR karmaşasından kurtulma
+    - USD bazlı net risk yönetimi
+    """
+    try:
+        MARGIN_USD = config.FIXED_MARGIN_USD
+        LEVERAGE = config.FUTURES_LEVERAGE
+        
+        # Confluence score'a göre grade belirle
+        if confluence_score >= 8.0:
+            grade = 'A'
+            sl_usd = config.CONFLUENCE_A_SL_USD  # $2.5
+            tp_usd = config.CONFLUENCE_A_TP_USD  # $6.0
+        elif confluence_score >= 6.5:
+            grade = 'B'
+            sl_usd = config.CONFLUENCE_B_SL_USD  # $2.0
+            tp_usd = config.CONFLUENCE_B_TP_USD  # $4.0
+        else:  # 5.0-6.4
+            grade = 'C'
+            sl_usd = config.CONFLUENCE_C_SL_USD  # $1.5
+            tp_usd = config.CONFLUENCE_C_TP_USD  # $3.0
+        
+        # Pozisyon büyüklüğü (coin adedi)
+        position_size = (MARGIN_USD * LEVERAGE) / entry_price
+        
+        # USD'den fiyata çevirme
+        if direction.upper() == 'LONG':
+            tp_price = entry_price + (tp_usd / position_size)
+            sl_price = entry_price - (sl_usd / position_size)
+        else:  # SHORT
+            tp_price = entry_price - (tp_usd / position_size)
+            sl_price = entry_price + (sl_usd / position_size)
+        
+        # R:R oranı hesapla
+        rr_ratio = tp_usd / sl_usd if sl_usd > 0 else 0
+        
+        logger.info(f"🎯 {symbol} - Confluence-Based TP/SL (Grade {grade}):")
+        logger.info(f"   ⭐ Confluence Score: {confluence_score:.2f}/10.0")
+        logger.info(f"   💰 Margin: ${MARGIN_USD} | Leverage: {LEVERAGE}x")
+        logger.info(f"   📈 Entry: ${entry_price:,.6f}")
+        logger.info(f"   🎯 TP: ${tp_price:,.6f} → ${tp_usd:.2f} kar")
+        logger.info(f"   🛑 SL: ${sl_price:,.6f} → ${sl_usd:.2f} zarar")
+        logger.info(f"   ⚖️ Risk-Reward: {rr_ratio:.2f}:1")
+        
+        return sl_price, tp_price
+        
+    except Exception as e:
+        logger.error(f"❌ Confluence TP/SL hesaplama hatası: {e}", exc_info=True)
+        logger.warning(f"   Sabit TP/SL'ye geri dönülüyor")
+        return calculate_fixed_sl_tp(symbol, direction, entry_price, confluence_score)
+
+
 def calculate_fixed_sl_tp(symbol: str, direction: str, entry_price: float, score: float) -> tuple:
     """
     v10.7.1 SABİT MARGIN TP/SL SİSTEMİ
@@ -380,38 +443,33 @@ def calculate_fixed_sl_tp(symbol: str, direction: str, entry_price: float, score
 
 def calculate_hybrid_sl_tp(symbol: str, direction: str, entry_price: float, score: float) -> tuple:
     """
-    v10.10 HİBRİT TP/SL SİSTEMİ (A/B Testing)
+    🎯 v11.4 HİBRİT TP/SL SİSTEMİ (Confluence-Based Primary)
     
-    A/B Test Modu:
-    - %50 pozisyonlar ATR bazlı (dinamik, volatiliteye göre)
-    - %50 pozisyonlar sabit ($4/$1)
+    Öncelik Sırası:
+    1. USE_CONFLUENCE_BASED_TP_SL = True → Confluence-based sistem (PRIMARY)
+    2. USE_ATR_BASED_TP_SL = True → ATR bazlı sistem (FALLBACK)
+    3. Else → Sabit TP/SL (LEGACY)
     
-    Symbol hash'e göre karar:
-    - hash(symbol) % 2 == 0 → ATR bazlı
-    - hash(symbol) % 2 == 1 → Sabit
+    A/B Test modu kapalı - %100 Confluence kullanımı
     """
     try:
-        # A/B test modu kapalıysa sadece ATR ya da Sabit kullan
-        if not config.AB_TEST_MODE:
-            if config.USE_ATR_BASED_TP_SL:
-                return calculate_atr_based_sl_tp(symbol, direction, entry_price, score)
-            else:
-                return calculate_fixed_sl_tp(symbol, direction, entry_price, score)
+        # Öncelik 1: Confluence-based sistem
+        if getattr(config, 'USE_CONFLUENCE_BASED_TP_SL', True):
+            logger.info(f"🎯 {symbol} → Confluence-based TP/SL kullanılıyor")
+            return calculate_confluence_based_sl_tp(symbol, direction, entry_price, score)
         
-        # A/B test modu: Symbol hash'e göre karar
-        symbol_hash = hash(symbol)
-        use_atr = (symbol_hash % 2) == 0
-        
-        if use_atr:
-            logger.info(f"🧪 A/B Test: {symbol} → ATR bazlı TP/SL")
+        # Öncelik 2: ATR-based sistem (fallback)
+        if config.USE_ATR_BASED_TP_SL:
+            logger.info(f"📊 {symbol} → ATR-based TP/SL kullanılıyor (fallback)")
             return calculate_atr_based_sl_tp(symbol, direction, entry_price, score)
-        else:
-            logger.info(f"🧪 A/B Test: {symbol} → Sabit TP/SL")
-            return calculate_fixed_sl_tp(symbol, direction, entry_price, score)
+        
+        # Öncelik 3: Sabit sistem (legacy)
+        logger.info(f"🔧 {symbol} → Sabit TP/SL kullanılıyor (legacy)")
+        return calculate_fixed_sl_tp(symbol, direction, entry_price, score)
         
     except Exception as e:
         logger.error(f"Hybrid TP/SL hatası: {e}", exc_info=True)
-        # Fallback: Sabit TP/SL
+        # Final fallback: Sabit TP/SL
         return calculate_fixed_sl_tp(symbol, direction, entry_price, score)
 
 

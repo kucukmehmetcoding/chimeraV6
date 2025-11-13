@@ -14,7 +14,7 @@ else:
     print(f"Config Uyarı: .env dosyası bulunamadı: {dotenv_path}")
 
 # --- BOT Ayarları ---
-BOT_VERSION = "10.6-Hybrid" # v10.6 Hybrid Strategy - Real-time EMA Crossover + 1H Confirmation
+BOT_VERSION = "11.4.0-Confluence" # v11.4 Confluence-Based TP/SL - Score-driven dynamic targets
 
 # --- API Anahtarları ---
 # Testnet moduna göre key seçimi
@@ -805,27 +805,43 @@ ADAPTIVE_MIN_WATCHLIST_SIZE = 5  # Min watchlist size
 INSTANT_CROSSOVER_TRADE = os.getenv("INSTANT_CROSSOVER_TRADE", "True").lower() == "true"
 ADAPTIVE_INSTANT_TRADE = INSTANT_CROSSOVER_TRADE  # Old name
 
-# 🚀 v10.8: Multi-Timeframe Confidence System (DÜŞÜRÜLMÜŞ TEST İÇİN)
-MIN_CONFIDENCE_SCORE = float(os.getenv("MIN_CONFIDENCE_SCORE", 0.3))  # 0-1 arası, daha kolay sinyal için 0.3
+# 🚀 v10.8: Multi-Timeframe Confidence System (DEPRECATED - Use Confluence Score)
+MIN_CONFIDENCE_SCORE = float(os.getenv("MIN_CONFIDENCE_SCORE", 0.3))  # Legacy system, not used in v11.4+
 
-# 🆕 v10.10: ATR-Based TP/SL System (%100 ATR - Manuel Sistem Kapalı)
-USE_ATR_BASED_TP_SL = os.getenv("USE_ATR_BASED_TP_SL", "True").lower() == "true"  # True = %100 ATR
+# 🎯 v11.4: CONFLUENCE-BASED TP/SL SYSTEM
+# Score-based TP/SL: Kaliteli sinyaller daha geniş targets alır
+USE_CONFLUENCE_BASED_TP_SL = os.getenv("USE_CONFLUENCE_BASED_TP_SL", "True").lower() == "true"
+
+# Grade A (8.0-10.0): Yüksek kaliteli sinyaller - Geniş targets
+CONFLUENCE_A_SL_USD = float(os.getenv("CONFLUENCE_A_SL_USD", 2.5))  # $2.5 risk
+CONFLUENCE_A_TP_USD = float(os.getenv("CONFLUENCE_A_TP_USD", 6.0))  # $6.0 kar (R:R = 2.4)
+
+# Grade B (6.5-7.9): Orta kaliteli sinyaller - Dengeli targets
+CONFLUENCE_B_SL_USD = float(os.getenv("CONFLUENCE_B_SL_USD", 2.0))  # $2.0 risk
+CONFLUENCE_B_TP_USD = float(os.getenv("CONFLUENCE_B_TP_USD", 4.0))  # $4.0 kar (R:R = 2.0)
+
+# Grade C (5.0-6.4): Düşük kaliteli sinyaller - Muhafazakar targets
+CONFLUENCE_C_SL_USD = float(os.getenv("CONFLUENCE_C_SL_USD", 1.5))  # $1.5 risk
+CONFLUENCE_C_TP_USD = float(os.getenv("CONFLUENCE_C_TP_USD", 3.0))  # $3.0 kar (R:R = 2.0)
+
+# 🆕 v10.10: ATR-Based TP/SL System (FALLBACK ONLY)
+USE_ATR_BASED_TP_SL = os.getenv("USE_ATR_BASED_TP_SL", "False").lower() == "true"  # False = Use Confluence
 ATR_PERIOD = int(os.getenv("ATR_PERIOD", 14))  # ATR hesaplama periyodu
 ATR_TIMEFRAME = os.getenv("ATR_TIMEFRAME", "15m")  # ATR için timeframe
 
-# ATR Multipliers (v11.3: Restored to original values for better TP hit rate)
+# ATR Multipliers (Fallback için korundu)
 ATR_TP_MULTIPLIER = float(os.getenv("ATR_TP_MULTIPLIER", 4.0))  # TP = ATR × 4.0 (was 2.0 in v11.1)
 ATR_SL_MULTIPLIER = float(os.getenv("ATR_SL_MULTIPLIER", 2.0))  # SL = ATR × 2.0 (was 1.0 in v11.1)
 
-# ATR Risk Management (v11.1: SL limitleri güncellendi)
+# ATR Risk Management (Legacy - Confluence sisteminde kullanılmıyor)
 MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 1.5))  # Minimum R:R 1.5:1
-MAX_SL_USD = float(os.getenv("MAX_SL_USD", 2.5))  # Max SL $2.5 (v11.1: 3.0 → 2.5)
-MIN_TP_USD = float(os.getenv("MIN_TP_USD", 2.0))  # Min TP $2
-MIN_SL_USD = float(os.getenv("MIN_SL_USD", 1.5))  # Min SL $1.5
+MAX_SL_USD = float(os.getenv("MAX_SL_USD", 10.0))  # Esnetildi: Score zaten filtre ediyor
+MIN_TP_USD = float(os.getenv("MIN_TP_USD", 1.0))  # Esnetildi
+MIN_SL_USD = float(os.getenv("MIN_SL_USD", 0.5))  # Sadece noise koruması
 
-# A/B Testing: KAPALI - %100 ATR Kullanılıyor
-AB_TEST_MODE = os.getenv("AB_TEST_MODE", "False").lower() == "true"  # False = Pure ATR (A/B test kapalı)
-AB_TEST_RATIO = float(os.getenv("AB_TEST_RATIO", 1.0))  # 1.0 = %100 ATR
+# A/B Testing: KAPALI - %100 Confluence Kullanılıyor
+AB_TEST_MODE = os.getenv("AB_TEST_MODE", "False").lower() == "true"  # False = Pure Confluence
+AB_TEST_RATIO = float(os.getenv("AB_TEST_RATIO", 1.0))  # 1.0 = %100 Confluence
 
 # Candle freshness thresholds (saniye)
 CANDLE_FRESHNESS_THRESHOLD = {
