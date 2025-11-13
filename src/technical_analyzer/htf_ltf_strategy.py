@@ -189,6 +189,23 @@ def check_ltf_trigger_15m(
         crossover_on_last_candle = (ema5_prev <= ema20_prev) and (ema5_curr > ema20_curr)
         
         if not crossover_on_last_candle:
+            # 🔍 PRE-CROSSOVER DETECTION: EMA'lar yaklaşıyor mu?
+            ema_distance_pct = abs((ema5_curr - ema20_curr) / ema20_curr) * 100
+            proximity_threshold = 0.5  # %0.5 - crossover'a yakın
+            
+            if ema5_curr < ema20_curr and ema_distance_pct <= proximity_threshold:
+                # EMA5 hala altında ama çok yakın - yaklaşma var!
+                ema5_slope = ema5_curr - ema5_prev
+                ema20_slope = ema20_curr - ema20_prev
+                
+                if ema5_slope > ema20_slope:
+                    # EMA5 daha hızlı yükseliyor - kesişme yakın!
+                    logger.info(f"⚡ {symbol} PRE-CROSSOVER ALERT (LONG)")
+                    logger.info(f"   EMA5: {ema5_curr:.4f} ({ema5_slope:+.4f}/mum)")
+                    logger.info(f"   EMA20: {ema20_curr:.4f} ({ema20_slope:+.4f}/mum)")
+                    logger.info(f"   Distance: {ema_distance_pct:.3f}% (threshold: {proximity_threshold}%)")
+                    logger.info(f"   🎯 Yaklaşık {int(ema_distance_pct / abs(ema5_slope - ema20_slope + 0.0001) * 15)} dakika içinde crossover olabilir!")
+            
             logger.debug(f"   {symbol} 15M: LONG için SON MUMDA crossover YOK (EMA5 prev: {ema5_prev:.4f}, curr: {ema5_curr:.4f} | EMA20 prev: {ema20_prev:.4f}, curr: {ema20_curr:.4f})")
             return None        # MACD Histogram kontrolü
         if macd_hist_curr <= 0:
@@ -229,6 +246,23 @@ def check_ltf_trigger_15m(
         crossover_on_last_candle = (ema5_prev >= ema20_prev) and (ema5_curr < ema20_curr)
         
         if not crossover_on_last_candle:
+            # 🔍 PRE-CROSSOVER DETECTION: EMA'lar yaklaşıyor mu?
+            ema_distance_pct = abs((ema5_curr - ema20_curr) / ema20_curr) * 100
+            proximity_threshold = 0.5  # %0.5 - crossover'a yakın
+            
+            if ema5_curr > ema20_curr and ema_distance_pct <= proximity_threshold:
+                # EMA5 hala üstünde ama çok yakın - yaklaşma var!
+                ema5_slope = ema5_curr - ema5_prev
+                ema20_slope = ema20_curr - ema20_prev
+                
+                if ema5_slope < ema20_slope:
+                    # EMA5 daha hızlı düşüyor - kesişme yakın!
+                    logger.info(f"⚡ {symbol} PRE-CROSSOVER ALERT (SHORT)")
+                    logger.info(f"   EMA5: {ema5_curr:.4f} ({ema5_slope:+.4f}/mum)")
+                    logger.info(f"   EMA20: {ema20_curr:.4f} ({ema20_slope:+.4f}/mum)")
+                    logger.info(f"   Distance: {ema_distance_pct:.3f}% (threshold: {proximity_threshold}%)")
+                    logger.info(f"   🎯 Yaklaşık {int(ema_distance_pct / abs(ema5_slope - ema20_slope + 0.0001) * 15)} dakika içinde crossover olabilir!")
+            
             logger.debug(f"   {symbol} 15M: SHORT için SON MUMDA crossover YOK (EMA5 prev: {ema5_prev:.4f}, curr: {ema5_curr:.4f} | EMA20 prev: {ema20_prev:.4f}, curr: {ema20_curr:.4f})")
             return None
         
