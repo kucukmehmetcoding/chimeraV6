@@ -56,7 +56,7 @@ REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "ChimeraBotSentiment/0.1 (by 
 
 # --- Google Gemini API (v11.5: AI-Enhanced Signal Validation) ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", None)
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")  # flash = faster/cheaper, pro = better quality
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")  # flash = faster/cheaper, pro = better quality
 GEMINI_ENABLED = os.getenv("GEMINI_ENABLED", "True").lower() == "true"  # Master switch
 
 # Gemini Features (v11.5)
