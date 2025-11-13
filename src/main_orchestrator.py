@@ -88,13 +88,13 @@ try:
     # 🆕 v11.3: Confluence Scoring System
     from src.technical_analyzer.confluence_scorer import get_confluence_scorer
     
-    # 🤖 v11.5: Gemini AI Integration
+    # 🤖 v11.6: Multi-AI Integration (DeepSeek + Groq + Gemini)
     try:
-        from src.alpha_engine import gemini_client, gemini_strategies
-        logger.info("✅ Gemini AI modules loaded")
+        from src.alpha_engine import ai_client, gemini_strategies
+        logger.info("✅ Multi-AI modules loaded (DeepSeek, Groq, Gemini)")
     except ImportError as e:
-        logger.warning(f"⚠️ Gemini AI modules not available: {e}")
-        gemini_client = None
+        logger.warning(f"⚠️ AI modules not available: {e}")
+        ai_client = None
         gemini_strategies = None
     
     # 🆕 v10.8: Multi-Timeframe Analyzer (DEPRECATED - using HTF-LTF now)
@@ -1247,7 +1247,7 @@ def execute_multi_timeframe_position(symbol: str, signal: dict) -> bool:
         gemini_sl_adjustment = 1.0
         
         if gemini_strategies and config.GEMINI_SIGNAL_VALIDATION:
-            logger.info(f"🤖 Requesting Gemini AI validation...")
+            logger.info(f"🤖 Requesting AI validation (Primary: {config.AI_PRIMARY_PROVIDER.upper()})...")
             try:
                 # Prepare technical data
                 technical_data = {
@@ -1276,16 +1276,17 @@ def execute_multi_timeframe_position(symbol: str, signal: dict) -> bool:
                 if gemini_result:
                     decision = gemini_result.get('decision', 'APPROVED')
                     gemini_confidence = gemini_result.get('confidence', 5.0)
+                    ai_provider = gemini_result.get('provider', 'AI').upper()
                     
-                    logger.info(f"   🤖 Gemini Decision: {decision} (Confidence: {gemini_confidence}/10)")
+                    logger.info(f"   🤖 {ai_provider} Decision: {decision} (Confidence: {gemini_confidence}/10)")
                     logger.info(f"      Reasoning: {gemini_result.get('reasoning', 'N/A')}")
                     
                     if decision == 'REJECTED':
-                        logger.warning(f"❌ GEMINI REJECTED SIGNAL: {gemini_result.get('reasoning')}")
+                        logger.warning(f"❌ {ai_provider} REJECTED SIGNAL: {gemini_result.get('reasoning')}")
                         return False
                     
                     elif decision == 'CAUTION':
-                        logger.warning(f"⚠️ GEMINI CAUTION: Reducing confidence")
+                        logger.warning(f"⚠️ {ai_provider} CAUTION: Reducing confidence")
                         confidence *= 0.85  # 15% penalty
                         if confluence_data:
                             confluence_data['total_score'] *= 0.9  # Also reduce confluence
@@ -1297,9 +1298,15 @@ def execute_multi_timeframe_position(symbol: str, signal: dict) -> bool:
                     if gemini_tp_adjustment != 1.0 or gemini_sl_adjustment != 1.0:
                         logger.info(f"   🎯 Gemini TP/SL Adjustments: TP×{gemini_tp_adjustment:.2f}, SL×{gemini_sl_adjustment:.2f}")
                 
+                else:
+                    # AI responded but returned None/empty - REJECT
+                    logger.error(f"❌ AI validation returned empty response - REJECTING signal")
+                    return False
+                
             except Exception as gemini_error:
-                logger.warning(f"⚠️ Gemini validation failed: {gemini_error}")
-                logger.info("   Proceeding without AI validation...")
+                logger.error(f"❌ AI validation FAILED: {gemini_error}")
+                logger.error(f"   🚫 REJECTING SIGNAL - AI validation is MANDATORY")
+                return False
         
         # 1. TP/SL hesapla (Gemini adjustments ile)
         sl_price, tp_price = calculate_hybrid_sl_tp(symbol, direction, entry_price, confidence)
@@ -1706,17 +1713,20 @@ def main():
         telegram_notifier.initialize_bot(config)
         logger.info("   ✅ Telegram bot hazır\n")
         
-        # 🤖 v11.5: Gemini AI Başlat
-        if gemini_client and config.GEMINI_ENABLED:
-            logger.info("🤖 Gemini AI başlatılıyor...")
-            if gemini_client.initialize_gemini_client(config):
-                logger.info("   ✅ Gemini AI hazır")
-                logger.info(f"   📊 Model: {config.GEMINI_MODEL}")
-                logger.info(f"   🎯 Features: News={config.GEMINI_NEWS_ANALYSIS}, "
-                           f"Signal={config.GEMINI_SIGNAL_VALIDATION}, "
-                           f"Market={config.GEMINI_MARKET_CONTEXT}\n")
+        # 🤖 v11.6: Multi-AI System Başlat (DeepSeek → Groq → Gemini fallback)
+        if ai_client and config.AI_ENABLED:
+            logger.info("🤖 Multi-AI System başlatılıyor...")
+            status = ai_client.initialize_ai_clients(config)
+            
+            active_providers = [p for p, ok in status.items() if ok and p != 'any_available']
+            if active_providers:
+                logger.info(f"   ✅ AI Providers: {', '.join(p.upper() for p in active_providers)}")
+                logger.info(f"   🎯 Primary: {config.AI_PRIMARY_PROVIDER.upper()}")
+                logger.info(f"   📊 Features: News={config.AI_NEWS_ANALYSIS}, "
+                           f"Signal={config.AI_SIGNAL_VALIDATION}, "
+                           f"Market={config.AI_MARKET_CONTEXT}\n")
             else:
-                logger.warning("   ⚠️ Gemini AI başlatılamadı - Sadece VADER kullanılacak\n")
+                logger.warning("   ⚠️ AI System başlatılamadı - Sadece VADER kullanılacak\n")
         else:
             logger.info("ℹ️  Gemini AI devre dışı - Sadece VADER kullanılacak\n")
         

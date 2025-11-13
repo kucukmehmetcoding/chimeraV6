@@ -207,9 +207,11 @@ def _call_deepseek(prompt: str, parse_json: bool, config: object) -> Optional[Di
             elif '```' in text:
                 text = text.split('```')[1].split('```')[0].strip()
             
-            return json.loads(text)
+            result = json.loads(text)
+            result['provider'] = 'deepseek'  # Add provider info
+            return result
         else:
-            return {'text': text}
+            return {'text': text, 'provider': 'deepseek'}
             
     except json.JSONDecodeError as e:
         logger.error(f"DeepSeek JSON parse error: {e}")
@@ -250,9 +252,11 @@ def _call_groq(prompt: str, parse_json: bool, config: object) -> Optional[Dict[s
             elif '```' in text:
                 text = text.split('```')[1].split('```')[0].strip()
             
-            return json.loads(text)
+            result = json.loads(text)
+            result['provider'] = 'groq'  # Add provider info
+            return result
         else:
-            return {'text': text}
+            return {'text': text, 'provider': 'groq'}
             
     except json.JSONDecodeError as e:
         logger.error(f"Groq JSON parse error: {e}")

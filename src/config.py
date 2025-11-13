@@ -74,7 +74,7 @@ DEEPSEEK_TEMPERATURE = float(os.getenv("DEEPSEEK_TEMPERATURE", 0.7))
 
 # --- Groq API (Fast Fallback) ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", None)
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")  # or mixtral-8x7b-32768
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # Updated: 3.1 deprecated, using 3.3
 GROQ_MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS", 2000))
 GROQ_TEMPERATURE = float(os.getenv("GROQ_TEMPERATURE", 0.7))
 
