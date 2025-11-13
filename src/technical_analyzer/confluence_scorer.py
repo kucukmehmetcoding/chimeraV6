@@ -58,7 +58,7 @@ class ConfluenceScorer:
         }
         
         # Minimum score threshold (configurable)
-        self.min_score = getattr(config, 'MIN_CONFLUENCE_SCORE', 6.0)
+        self.min_score = getattr(config, 'MIN_CONFLUENCE_SCORE', 5.0)
         
         logger.info(f"📊 ConfluenceScorer initialized")
         logger.info(f"   HTF weight: {self.htf_weight}, LTF weight: {self.ltf_weight}")
