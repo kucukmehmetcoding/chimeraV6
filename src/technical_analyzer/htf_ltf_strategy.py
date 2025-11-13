@@ -182,18 +182,15 @@ def check_ltf_trigger_15m(
     # LONG TRIGGER (sadece allowed_direction='LONG' ise kontrol et)
     # ───────────────────────────────────────────────────────────────────
     if allowed_direction == 'LONG':
-        # Crossover kontrolü (son veya bir önceki mumda)
-        crossover_current = (ema5_prev <= ema20_prev) and (ema5_curr > ema20_curr)
+        # 🔥 KRİTİK: SON MUMDA CROSSOVER OLMALI!
+        # 15M timeframe'de son mum = en güncel fiyat hareketi
+        # Önceki mumda EMA5 <= EMA20, şu anda EMA5 > EMA20
         
-        # Daha önceki bir mumda da crossover olmuş olabilir, o zaman hala geçerli mi?
-        # Basit kontrol: EMA5 hala EMA20 üstünde mi?
-        crossover_active = ema5_curr > ema20_curr
+        crossover_on_last_candle = (ema5_prev <= ema20_prev) and (ema5_curr > ema20_curr)
         
-        if not crossover_active:
-            logger.debug(f"   {symbol} 15M: LONG için EMA5 > EMA20 değil")
-            return None
-        
-        # MACD Histogram kontrolü
+        if not crossover_on_last_candle:
+            logger.debug(f"   {symbol} 15M: LONG için SON MUMDA crossover YOK (EMA5 prev: {ema5_prev:.4f}, curr: {ema5_curr:.4f} | EMA20 prev: {ema20_prev:.4f}, curr: {ema20_curr:.4f})")
+            return None        # MACD Histogram kontrolü
         if macd_hist_curr <= 0:
             logger.debug(f"   {symbol} 15M: LONG için MACD Histogram <= 0 ({macd_hist_curr:.4f})")
             return None
@@ -204,11 +201,9 @@ def check_ltf_trigger_15m(
             return None
         
         # ✅ TÜM KOŞULLAR SAĞLANDI
-        crossover_type = 'current' if crossover_current else 'active'
-        
         logger.info(f"🎯 {symbol} 15M TRIGGER → LONG SİNYALİ!")
         logger.info(f"   Entry: ${close:.4f}")
-        logger.info(f"   EMA5: {ema5_curr:.4f} > EMA20: {ema20_curr:.4f} (Crossover: {crossover_type})")
+        logger.info(f"   🔥 SON MUMDA EMA CROSSOVER: EMA5({ema5_prev:.4f}→{ema5_curr:.4f}) > EMA20({ema20_prev:.4f}→{ema20_curr:.4f})")
         logger.info(f"   RSI: {rsi_curr:.1f} (50-75 ✓)")
         logger.info(f"   MACD Hist: {macd_hist_curr:.4f} > 0 ✓")
         
@@ -219,21 +214,22 @@ def check_ltf_trigger_15m(
             'ema20': ema20_curr,
             'rsi': rsi_curr,
             'macd_hist': macd_hist_curr,
-            'crossover_candle': crossover_type
+            'crossover_candle': 'last_candle',
+            'crossover_confirmed': True
         }
     
     # ───────────────────────────────────────────────────────────────────
     # SHORT TRIGGER (sadece allowed_direction='SHORT' ise kontrol et)
     # ───────────────────────────────────────────────────────────────────
     elif allowed_direction == 'SHORT':
-        # Crossover kontrolü (son veya bir önceki mumda)
-        crossover_current = (ema5_prev >= ema20_prev) and (ema5_curr < ema20_curr)
+        # 🔥 KRİTİK: SON MUMDA CROSSOVER OLMALI!
+        # 15M timeframe'de son mum = en güncel fiyat hareketi
+        # Önceki mumda EMA5 >= EMA20, şu anda EMA5 < EMA20
         
-        # Daha önceki bir mumda da crossover olmuş olabilir
-        crossover_active = ema5_curr < ema20_curr
+        crossover_on_last_candle = (ema5_prev >= ema20_prev) and (ema5_curr < ema20_curr)
         
-        if not crossover_active:
-            logger.debug(f"   {symbol} 15M: SHORT için EMA5 < EMA20 değil")
+        if not crossover_on_last_candle:
+            logger.debug(f"   {symbol} 15M: SHORT için SON MUMDA crossover YOK (EMA5 prev: {ema5_prev:.4f}, curr: {ema5_curr:.4f} | EMA20 prev: {ema20_prev:.4f}, curr: {ema20_curr:.4f})")
             return None
         
         # MACD Histogram kontrolü
@@ -247,11 +243,9 @@ def check_ltf_trigger_15m(
             return None
         
         # ✅ TÜM KOŞULLAR SAĞLANDI
-        crossover_type = 'current' if crossover_current else 'active'
-        
         logger.info(f"🎯 {symbol} 15M TRIGGER → SHORT SİNYALİ!")
         logger.info(f"   Entry: ${close:.4f}")
-        logger.info(f"   EMA5: {ema5_curr:.4f} < EMA20: {ema20_curr:.4f} (Crossover: {crossover_type})")
+        logger.info(f"   🔥 SON MUMDA EMA CROSSOVER: EMA5({ema5_prev:.4f}→{ema5_curr:.4f}) < EMA20({ema20_prev:.4f}→{ema20_curr:.4f})")
         logger.info(f"   RSI: {rsi_curr:.1f} (25-50 ✓)")
         logger.info(f"   MACD Hist: {macd_hist_curr:.4f} < 0 ✓")
         
@@ -262,7 +256,8 @@ def check_ltf_trigger_15m(
             'ema20': ema20_curr,
             'rsi': rsi_curr,
             'macd_hist': macd_hist_curr,
-            'crossover_candle': crossover_type
+            'crossover_candle': 'last_candle',
+            'crossover_confirmed': True
         }
     
     else:

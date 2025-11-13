@@ -172,8 +172,16 @@ EMA_MODE_SL_MARGIN = 9.0            # SL: Margin $10 → $9 olunca kapat (-$1 za
 # R:R Ratio: 4.0 ($4 kar / $1 zarar)
 
 # 🆕 v10.6: WEBSOCKET REAL-TIME MONITORING - Phase 1
+# 🔥 v11.6.2: STRICT LAST-CANDLE CROSSOVER CHECK
 # WebSocket için kline stream interval (crossover detection için)
 WEBSOCKET_KLINE_INTERVAL = "15m"    # 15 dakikalık mumlar (real-time monitoring)
+WEBSOCKET_ENABLED = os.getenv("WEBSOCKET_ENABLED", "True").lower() == "true"  # WebSocket aktif/pasif
+WEBSOCKET_STRICT_CROSSOVER = os.getenv("WEBSOCKET_STRICT_CROSSOVER", "True").lower() == "true"  # Sadece SON MUMDA crossover kabul
+
+# 🎯 CROSSOVER DETECTION LOGIC:
+# True (STRICT):  Sadece son mumda EMA5 x EMA20 kesişimi → Taze sinyaller
+# False (RELAXED): Son 3-5 mum içinde kesişim → Trend kaçırma riski!
+# ÖNERİLEN: True (strict mode) - trend kaçırma yerine doğruluk öncelikli
 
 # v8.1: Rotating Scan (tüm coinlerin döngüsel taranması)
 ENABLE_ROTATING_SCAN = os.getenv("ENABLE_ROTATING_SCAN", "True").lower() == "true"  # True: Rotating mode, False: İlk N coin

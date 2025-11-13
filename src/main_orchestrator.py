@@ -620,6 +620,11 @@ def on_websocket_crossover(kline_data: dict):
     """
     WebSocket crossover callback - instant position opening
     
+    🔥 v11.6.2: STRICT LAST-CANDLE CROSSOVER CHECK
+    - Sadece SON MUMDA gerçekleşen crossover'ları işler
+    - Eski crossover'ları reddeder
+    - Real-time 15M kline kapalışında tetiklenir
+    
     Called by WebSocket manager when kline data arrives.
     Checks for crossover and opens position if detected.
     
@@ -639,7 +644,7 @@ def on_websocket_crossover(kline_data: dict):
         close_price = kline_data.get('close')
         is_closed = kline_data.get('is_closed', False)
         
-        # Only process closed candles for crossover detection
+        # 🔥 KRİTİK: Sadece KAPALI mumlarda crossover kontrolü
         if not is_closed:
             return
         
@@ -661,27 +666,32 @@ def on_websocket_crossover(kline_data: dict):
             logger.debug(f"⚠️ Incomplete EMA cache for {symbol}")
             return
         
-        # Detect crossover
+        # 🔥 STRICT CROSSOVER DETECTION: SON MUMDA OLMALI!
         direction = None
         
-        # Bullish crossover: EMA5 crosses above EMA20
-        if prev_ema5 < prev_ema20 and current_ema5 > current_ema20:
+        # LONG: Önceki mumda EMA5 <= EMA20, şimdi EMA5 > EMA20
+        if prev_ema5 <= prev_ema20 and current_ema5 > current_ema20:
             direction = 'LONG'
-        # Bearish crossover: EMA5 crosses below EMA20
-        elif prev_ema5 > prev_ema20 and current_ema5 < current_ema20:
-            direction = 'SHORT'
+            logger.info(f"🔥 BULLISH CROSSOVER: {symbol} - EMA5({prev_ema5:.4f}→{current_ema5:.4f}) crossed ABOVE EMA20({prev_ema20:.4f}→{current_ema20:.4f})")
         
-        if not direction:
-            return  # No crossover
+        # SHORT: Önceki mumda EMA5 >= EMA20, şimdi EMA5 < EMA20
+        elif prev_ema5 >= prev_ema20 and current_ema5 < current_ema20:
+            direction = 'SHORT'
+            logger.info(f"🔥 BEARISH CROSSOVER: {symbol} - EMA5({prev_ema5:.4f}→{current_ema5:.4f}) crossed BELOW EMA20({prev_ema20:.4f}→{current_ema20:.4f})")
+        else:
+            # Crossover yok - sadece debug log
+            logger.debug(f"   {symbol}: No crossover (EMA5: {prev_ema5:.2f}→{current_ema5:.2f}, EMA20: {prev_ema20:.2f}→{current_ema20:.2f})")
+            return
         
         logger.info("\n" + "="*80)
-        logger.info(f"🚨 INSTANT CROSSOVER DETECTED - WebSocket")
+        logger.info(f"🚨 INSTANT CROSSOVER DETECTED - WebSocket (LAST CANDLE)")
         logger.info("="*80)
         logger.info(f"Symbol: {symbol}")
         logger.info(f"Direction: {direction}")
         logger.info(f"Price: ${close_price:.2f}")
         logger.info(f"EMA5: {prev_ema5:.2f} → {current_ema5:.2f}")
         logger.info(f"EMA20: {prev_ema20:.2f} → {current_ema20:.2f}")
+        logger.info(f"Timestamp: {datetime.fromtimestamp(kline_data.get('timestamp', 0)/1000).strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("="*80)
         
         # Check if instant trade is enabled
