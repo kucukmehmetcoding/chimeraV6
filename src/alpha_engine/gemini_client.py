@@ -1,14 +1,29 @@
 # src/alpha_engine/gemini_client.py
 """
-🤖 v11.5 GEMINI AI CLIENT
+Google Gemini AI Client for ChimeraBot v11.5
 
-Google Gemini API wrapper with:
-- Rate limiting (15 RPM free tier)
-- Error handling & retries
-- Response parsing & validation
-- Cost tracking
-- Cache management
+Provides AI-enhanced signal validation with:
+- Deep news sentiment analysis
+- Market context awareness  
+- Signal pre-approval system
+- TP/SL optimization suggestions
 """
+
+import time
+import json
+import logging
+from typing import Optional, Dict, Any
+import threading
+
+try:
+    import google.generativeai as genai
+    from google.generativeai.types import HarmCategory, HarmBlockThreshold
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    genai = None
+    HarmCategory = None
+    HarmBlockThreshold = None
 
 import logging
 import time
@@ -167,11 +182,24 @@ def call_gemini_api(
         start_time = time.time()
         
         # Safety settings: BLOCK_NONE for all categories (crypto trading content)
+        # Use proper enums from google.generativeai.types
         safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            {
+                "category": HarmCategory.HARM_CATEGORY_HARASSMENT,
+                "threshold": HarmBlockThreshold.BLOCK_NONE
+            },
+            {
+                "category": HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                "threshold": HarmBlockThreshold.BLOCK_NONE
+            },
+            {
+                "category": HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                "threshold": HarmBlockThreshold.BLOCK_NONE
+            },
+            {
+                "category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                "threshold": HarmBlockThreshold.BLOCK_NONE
+            },
         ]
         
         response = _gemini_model.generate_content(
