@@ -1,12 +1,14 @@
 # src/alpha_engine/gemini_strategies.py
 """
-🤖 v11.5 GEMINI AI STRATEGIES
+🤖 v11.6 MULTI-AI STRATEGIES (DeepSeek + Groq + Gemini)
 
 AI-powered signal enhancement modules:
 1. News Deep Analysis
 2. Market Context Detection
 3. Signal Validation
 4. TP/SL Optimization
+
+Supports: DeepSeek (primary), Groq (fast fallback), Gemini (backup)
 """
 
 import logging
@@ -15,12 +17,15 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-# Import Gemini client
+# Import unified AI client
 try:
-    from src.alpha_engine import gemini_client
+    from src.alpha_engine import ai_client
 except ImportError:
-    logger.warning("gemini_client not available")
-    gemini_client = None
+    logger.warning("ai_client not available")
+    ai_client = None
+
+# Legacy compatibility
+gemini_client = ai_client
 
 
 # ============================================================================
@@ -51,7 +56,7 @@ def analyze_news_with_gemini(
             'confidence': 0-10
         }
     """
-    if not config.GEMINI_NEWS_ANALYSIS or not gemini_client.is_gemini_available():
+    if not config.GEMINI_NEWS_ANALYSIS or not ai_client.is_ai_available():
         return None
     
     try:
@@ -106,7 +111,7 @@ Guidelines:
 """
         
         # Call Gemini
-        response = gemini_client.call_gemini_api(prompt, parse_json=True, config=config)
+        response = ai_client.call_ai_api(prompt, parse_json=True, config=config)
         
         if not response:
             return None
@@ -168,7 +173,7 @@ def get_market_context_from_gemini(
             'confidence': 0-10
         }
     """
-    if not config.GEMINI_MARKET_CONTEXT or not gemini_client.is_gemini_available():
+    if not config.GEMINI_MARKET_CONTEXT or not ai_client.is_ai_available():
         return None
     
     try:
@@ -222,7 +227,7 @@ Guidelines:
 """
         
         # Call Gemini
-        response = gemini_client.call_gemini_api(prompt, parse_json=True, config=config)
+        response = ai_client.call_ai_api(prompt, parse_json=True, config=config)
         
         if not response:
             return None
@@ -280,7 +285,7 @@ def validate_signal_with_gemini(
             'reasoning': 'Explanation'
         }
     """
-    if not config.GEMINI_SIGNAL_VALIDATION or not gemini_client.is_gemini_available():
+    if not config.GEMINI_SIGNAL_VALIDATION or not ai_client.is_ai_available():
         return None
     
     try:
@@ -338,7 +343,7 @@ Guidelines:
 """
         
         # Call Gemini
-        response = gemini_client.call_gemini_api(prompt, parse_json=True, config=config)
+        response = ai_client.call_ai_api(prompt, parse_json=True, config=config)
         
         if not response:
             # Fallback: approve with neutral adjustments
@@ -414,7 +419,7 @@ def optimize_tp_sl_with_gemini(
             'reasoning': 'Explanation'
         }
     """
-    if not config.GEMINI_TP_SL_OPTIMIZER or not gemini_client.is_gemini_available():
+    if not config.GEMINI_TP_SL_OPTIMIZER or not ai_client.is_ai_available():
         return None
     
     # TODO: Implement if needed

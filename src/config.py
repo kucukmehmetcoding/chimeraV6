@@ -54,29 +54,66 @@ REDDIT_USERNAME = os.getenv("REDDIT_USERNAME", None)
 REDDIT_PASSWORD = os.getenv("REDDIT_PASSWORD", None)
 REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "ChimeraBotSentiment/0.1 (by u/UnknownUser)")
 
-# --- Google Gemini API (v11.5: AI-Enhanced Signal Validation) ---
+# ============================================================================
+# 🤖 MULTI-AI SYSTEM (v11.6: DeepSeek + Groq + Gemini)
+# ============================================================================
+
+# --- AI Provider Priority (Fallback Chain) ---
+# 1. DeepSeek (crypto-trained, detailed)
+# 2. Groq (fast, llama 3.1 70B)
+# 3. Gemini (Google, backup)
+AI_ENABLED = os.getenv("AI_ENABLED", "True").lower() == "true"  # Master AI switch
+AI_PRIMARY_PROVIDER = os.getenv("AI_PRIMARY_PROVIDER", "deepseek")  # deepseek, groq, or gemini
+
+# --- DeepSeek API (Primary - Crypto-Friendly) ---
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", None)
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")  # deepseek-chat or deepseek-coder
+DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+DEEPSEEK_MAX_TOKENS = int(os.getenv("DEEPSEEK_MAX_TOKENS", 2000))
+DEEPSEEK_TEMPERATURE = float(os.getenv("DEEPSEEK_TEMPERATURE", 0.7))
+
+# --- Groq API (Fast Fallback) ---
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", None)
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")  # or mixtral-8x7b-32768
+GROQ_MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS", 2000))
+GROQ_TEMPERATURE = float(os.getenv("GROQ_TEMPERATURE", 0.7))
+
+# --- Google Gemini API (Legacy Backup) ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", None)
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")  # flash = faster/cheaper, pro = better quality
-GEMINI_ENABLED = os.getenv("GEMINI_ENABLED", "True").lower() == "true"  # Master switch
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_ENABLED = os.getenv("GEMINI_ENABLED", "True").lower() == "true"
 
-# Gemini Features (v11.5)
-GEMINI_NEWS_ANALYSIS = os.getenv("GEMINI_NEWS_ANALYSIS", "True").lower() == "true"  # Deep news sentiment
-GEMINI_SIGNAL_VALIDATION = os.getenv("GEMINI_SIGNAL_VALIDATION", "True").lower() == "true"  # Pre-signal approval
-GEMINI_MARKET_CONTEXT = os.getenv("GEMINI_MARKET_CONTEXT", "True").lower() == "true"  # BTC market regime
-GEMINI_TP_SL_OPTIMIZER = os.getenv("GEMINI_TP_SL_OPTIMIZER", "False").lower() == "true"  # Dynamic TP/SL (experimental)
+# --- AI Features (Universal) ---
+AI_NEWS_ANALYSIS = os.getenv("AI_NEWS_ANALYSIS", "True").lower() == "true"  # Deep news sentiment
+AI_SIGNAL_VALIDATION = os.getenv("AI_SIGNAL_VALIDATION", "True").lower() == "true"  # Pre-signal approval
+AI_MARKET_CONTEXT = os.getenv("AI_MARKET_CONTEXT", "True").lower() == "true"  # BTC market regime
+AI_TP_SL_OPTIMIZER = os.getenv("AI_TP_SL_OPTIMIZER", "False").lower() == "true"  # Dynamic TP/SL (experimental)
 
-# Gemini Rate Limiting
-GEMINI_MAX_REQUESTS_PER_MINUTE = int(os.getenv("GEMINI_MAX_REQUESTS_PER_MINUTE", 15))  # Free tier: 15 RPM
-GEMINI_REQUEST_TIMEOUT = int(os.getenv("GEMINI_REQUEST_TIMEOUT", 30))  # seconds
-GEMINI_RETRY_ATTEMPTS = int(os.getenv("GEMINI_RETRY_ATTEMPTS", 2))
+# --- AI Rate Limiting ---
+AI_MAX_REQUESTS_PER_MINUTE = int(os.getenv("AI_MAX_REQUESTS_PER_MINUTE", 30))  # Combined limit
+AI_REQUEST_TIMEOUT = int(os.getenv("AI_REQUEST_TIMEOUT", 30))  # seconds
+AI_RETRY_ATTEMPTS = int(os.getenv("AI_RETRY_ATTEMPTS", 2))
 
-# Gemini Cache Settings
-GEMINI_NEWS_CACHE_MINUTES = int(os.getenv("GEMINI_NEWS_CACHE_MINUTES", 30))  # Cache news analysis
-GEMINI_MARKET_CONTEXT_CACHE_MINUTES = int(os.getenv("GEMINI_MARKET_CONTEXT_CACHE_MINUTES", 15))  # Cache market regime
+# --- AI Cache Settings ---
+AI_NEWS_CACHE_MINUTES = int(os.getenv("AI_NEWS_CACHE_MINUTES", 30))  # Cache news analysis
+AI_MARKET_CONTEXT_CACHE_MINUTES = int(os.getenv("AI_MARKET_CONTEXT_CACHE_MINUTES", 15))  # Cache market regime
 
-# Gemini Response Thresholds
-GEMINI_MIN_CONFIDENCE_FOR_APPROVAL = float(os.getenv("GEMINI_MIN_CONFIDENCE_FOR_APPROVAL", 6.0))  # 0-10 scale
-GEMINI_REJECTION_THRESHOLD = float(os.getenv("GEMINI_REJECTION_THRESHOLD", 4.0))  # Below this = reject signal
+# --- AI Response Thresholds ---
+AI_MIN_CONFIDENCE_FOR_APPROVAL = float(os.getenv("AI_MIN_CONFIDENCE_FOR_APPROVAL", 6.0))  # 0-10 scale
+AI_REJECTION_THRESHOLD = float(os.getenv("AI_REJECTION_THRESHOLD", 4.0))  # Below this = reject signal
+
+# Legacy Gemini backward compatibility
+GEMINI_NEWS_ANALYSIS = AI_NEWS_ANALYSIS
+GEMINI_SIGNAL_VALIDATION = AI_SIGNAL_VALIDATION
+GEMINI_MARKET_CONTEXT = AI_MARKET_CONTEXT
+GEMINI_TP_SL_OPTIMIZER = AI_TP_SL_OPTIMIZER
+GEMINI_MAX_REQUESTS_PER_MINUTE = AI_MAX_REQUESTS_PER_MINUTE
+GEMINI_REQUEST_TIMEOUT = AI_REQUEST_TIMEOUT
+GEMINI_RETRY_ATTEMPTS = AI_RETRY_ATTEMPTS
+GEMINI_NEWS_CACHE_MINUTES = AI_NEWS_CACHE_MINUTES
+GEMINI_MARKET_CONTEXT_CACHE_MINUTES = AI_MARKET_CONTEXT_CACHE_MINUTES
+GEMINI_MIN_CONFIDENCE_FOR_APPROVAL = AI_MIN_CONFIDENCE_FOR_APPROVAL
+GEMINI_REJECTION_THRESHOLD = AI_REJECTION_THRESHOLD
 
 # --- Dosya Yolları ve Dizinler ---
 DATA_DIR = os.path.join(project_root, 'data')
