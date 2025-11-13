@@ -88,6 +88,15 @@ try:
     # 🆕 v11.3: Confluence Scoring System
     from src.technical_analyzer.confluence_scorer import get_confluence_scorer
     
+    # 🤖 v11.5: Gemini AI Integration
+    try:
+        from src.alpha_engine import gemini_client, gemini_strategies
+        logger.info("✅ Gemini AI modules loaded")
+    except ImportError as e:
+        logger.warning(f"⚠️ Gemini AI modules not available: {e}")
+        gemini_client = None
+        gemini_strategies = None
+    
     # 🆕 v10.8: Multi-Timeframe Analyzer (DEPRECATED - using HTF-LTF now)
     # from src.technical_analyzer.multi_timeframe_analyzer import (
     #     check_multi_timeframe_entry,
@@ -1619,6 +1628,20 @@ def main():
         logger.info("📱 Telegram bot başlatılıyor...")
         telegram_notifier.initialize_bot(config)
         logger.info("   ✅ Telegram bot hazır\n")
+        
+        # 🤖 v11.5: Gemini AI Başlat
+        if gemini_client and config.GEMINI_ENABLED:
+            logger.info("🤖 Gemini AI başlatılıyor...")
+            if gemini_client.initialize_gemini_client(config):
+                logger.info("   ✅ Gemini AI hazır")
+                logger.info(f"   📊 Model: {config.GEMINI_MODEL}")
+                logger.info(f"   🎯 Features: News={config.GEMINI_NEWS_ANALYSIS}, "
+                           f"Signal={config.GEMINI_SIGNAL_VALIDATION}, "
+                           f"Market={config.GEMINI_MARKET_CONTEXT}\n")
+            else:
+                logger.warning("   ⚠️ Gemini AI başlatılamadı - Sadece VADER kullanılacak\n")
+        else:
+            logger.info("ℹ️  Gemini AI devre dışı - Sadece VADER kullanılacak\n")
         
         # 🚨 v11.2: Binance Futures Executor Başlat (REAL TRADING için gerekli!)
         if config.ENABLE_REAL_TRADING:

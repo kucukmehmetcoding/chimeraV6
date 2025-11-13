@@ -14,7 +14,7 @@ else:
     print(f"Config Uyarı: .env dosyası bulunamadı: {dotenv_path}")
 
 # --- BOT Ayarları ---
-BOT_VERSION = "11.4.0-Confluence" # v11.4 Confluence-Based TP/SL - Score-driven dynamic targets
+BOT_VERSION = "11.5.0-AI" # v11.5 Gemini AI Integration - AI-Enhanced Signal Validation
 
 # --- API Anahtarları ---
 # Testnet moduna göre key seçimi
@@ -46,11 +46,37 @@ FUTURES_LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", 10))  # Sabit kaldıraç (t
 FUTURES_MARGIN_TYPE = os.getenv("FUTURES_MARGIN_TYPE", "ISOLATED")  # ISOLATED veya CROSS
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN_PLACEHOLDER")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID_PLACEHOLDER")
+
+# --- Reddit API ---
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", None)
 REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", None)
 REDDIT_USERNAME = os.getenv("REDDIT_USERNAME", None)
 REDDIT_PASSWORD = os.getenv("REDDIT_PASSWORD", None)
 REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "ChimeraBotSentiment/0.1 (by u/UnknownUser)")
+
+# --- Google Gemini API (v11.5: AI-Enhanced Signal Validation) ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", None)
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")  # flash = faster/cheaper, pro = better quality
+GEMINI_ENABLED = os.getenv("GEMINI_ENABLED", "True").lower() == "true"  # Master switch
+
+# Gemini Features (v11.5)
+GEMINI_NEWS_ANALYSIS = os.getenv("GEMINI_NEWS_ANALYSIS", "True").lower() == "true"  # Deep news sentiment
+GEMINI_SIGNAL_VALIDATION = os.getenv("GEMINI_SIGNAL_VALIDATION", "True").lower() == "true"  # Pre-signal approval
+GEMINI_MARKET_CONTEXT = os.getenv("GEMINI_MARKET_CONTEXT", "True").lower() == "true"  # BTC market regime
+GEMINI_TP_SL_OPTIMIZER = os.getenv("GEMINI_TP_SL_OPTIMIZER", "False").lower() == "true"  # Dynamic TP/SL (experimental)
+
+# Gemini Rate Limiting
+GEMINI_MAX_REQUESTS_PER_MINUTE = int(os.getenv("GEMINI_MAX_REQUESTS_PER_MINUTE", 15))  # Free tier: 15 RPM
+GEMINI_REQUEST_TIMEOUT = int(os.getenv("GEMINI_REQUEST_TIMEOUT", 30))  # seconds
+GEMINI_RETRY_ATTEMPTS = int(os.getenv("GEMINI_RETRY_ATTEMPTS", 2))
+
+# Gemini Cache Settings
+GEMINI_NEWS_CACHE_MINUTES = int(os.getenv("GEMINI_NEWS_CACHE_MINUTES", 30))  # Cache news analysis
+GEMINI_MARKET_CONTEXT_CACHE_MINUTES = int(os.getenv("GEMINI_MARKET_CONTEXT_CACHE_MINUTES", 15))  # Cache market regime
+
+# Gemini Response Thresholds
+GEMINI_MIN_CONFIDENCE_FOR_APPROVAL = float(os.getenv("GEMINI_MIN_CONFIDENCE_FOR_APPROVAL", 6.0))  # 0-10 scale
+GEMINI_REJECTION_THRESHOLD = float(os.getenv("GEMINI_REJECTION_THRESHOLD", 4.0))  # Below this = reject signal
 
 # --- Dosya Yolları ve Dizinler ---
 DATA_DIR = os.path.join(project_root, 'data')

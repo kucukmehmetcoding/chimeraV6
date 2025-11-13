@@ -1,7 +1,7 @@
 # ============================================================================
 # ChimeraBot Requirements - Coolify Deployment Ready
 # ============================================================================
-# Güncellenme: 7 Kasım 2025
+# Güncellenme: 13 Kasım 2025 (v11.5 - Gemini AI Integration)
 # Python Versiyon: 3.11+
 # ============================================================================
 
@@ -37,7 +37,9 @@ lxml==5.1.0                    # XML/HTML parser (bs4 dependency)
 praw==7.7.1                    # Reddit API wrapper
 vaderSentiment==3.3.2          # VADER sentiment (Reddit & news polarity)
 pytrends==4.9.2                # Google Trends data
-google-generativeai==0.3.2     # Google Gemini API for news sentiment
+
+# --- Google Gemini AI (v11.5) ---
+google-generativeai==0.8.3     # Gemini API client (latest stable)
 
 # --- Google APIs (for Gemini) ---
 google-api-core==2.15.0

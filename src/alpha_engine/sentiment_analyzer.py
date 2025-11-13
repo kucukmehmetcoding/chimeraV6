@@ -28,6 +28,16 @@ if TYPE_CHECKING:
 # --- Loglama (En başta tanımla) ---
 logger = logging.getLogger(__name__)
 
+# --- Gemini AI Integration (v11.5) ---
+try:
+    from src.alpha_engine import gemini_client, gemini_strategies
+    logger.info("✅ Gemini AI modules loaded")
+except ImportError as e:
+    logger.warning(f"⚠️ Gemini AI modules not available: {e}")
+    gemini_client = None
+    gemini_strategies = None
+
+
 # --- Veritabanı Modellerini Import Etme ---
 try:
     from src.database.models import db_session, AlphaCache, init_db, get_db_session
@@ -306,27 +316,72 @@ def _get_search_terms(symbol: str, config: object) -> set:
     return terms
 
 def calculate_news_sentiment_for_symbol(symbol: str, headlines: list, config: object) -> Optional[float]:
-    # ... (Kod aynı, değişiklik yok) ...
+    """
+    v11.5: VADER + Gemini Hybrid News Sentiment
+    
+    Returns combined sentiment score from:
+    - VADER: Fast keyword-based analysis
+    - Gemini AI: Deep context understanding (if enabled)
+    
+    Final score: VADER (40%) + Gemini (60%) if both available
+    """
+    # VADER Analysis (always run, fast)
+    vader_score = None
     relevant_scores = []
-    current_time = time.time(); lookback_hours = getattr(config, 'SENTIMENT_NEWS_LOOKBACK_HOURS', 24)
-    lookback_seconds = lookback_hours * 3600; search_terms = _get_search_terms(symbol, config)
-    if not headlines: return None
-    for h in headlines:
-       ts = h.get('published_timestamp'); title = h.get('title')
-       if ts is None or (current_time - ts > lookback_seconds) or not title: continue
-       summary = h.get('summary') or ''
-       text = f"{title} {summary}".strip()
-       text_lower = text.lower()
-       try:
-           if any(re.search(r'\b' + re.escape(term) + r'\b', text_lower) for term in search_terms):
-              relevant_scores.append(analyze_sentiment_vader(text))
-       except Exception: # Regex hatası olursa
-           if any(term in text_lower for term in search_terms):
-               relevant_scores.append(analyze_sentiment_vader(text))
-    if not relevant_scores: logger.info(f"'{symbol}' için son {lookback_hours}s ilgili haber yok."); return None
-    avg_score = sum(relevant_scores) / len(relevant_scores)
-    logger.info(f"'{symbol}' için {len(relevant_scores)} haberin ort. duygu skoru: {avg_score:.3f}")
-    return avg_score
+    current_time = time.time()
+    lookback_hours = getattr(config, 'SENTIMENT_NEWS_LOOKBACK_HOURS', 24)
+    lookback_seconds = lookback_hours * 3600
+    search_terms = _get_search_terms(symbol, config)
+    
+    if headlines:
+        for h in headlines:
+            ts = h.get('published_timestamp')
+            title = h.get('title')
+            if ts is None or (current_time - ts > lookback_seconds) or not title:
+                continue
+            summary = h.get('summary') or ''
+            text = f"{title} {summary}".strip()
+            text_lower = text.lower()
+            try:
+                if any(re.search(r'\b' + re.escape(term) + r'\b', text_lower) for term in search_terms):
+                    relevant_scores.append(analyze_sentiment_vader(text))
+            except Exception:  # Regex hatası olursa
+                if any(term in text_lower for term in search_terms):
+                    relevant_scores.append(analyze_sentiment_vader(text))
+        
+        if relevant_scores:
+            vader_score = sum(relevant_scores) / len(relevant_scores)
+            logger.info(f"   VADER: {len(relevant_scores)} haber, skor={vader_score:.3f}")
+    
+    # Gemini Deep Analysis (if enabled and available)
+    gemini_score = None
+    if gemini_strategies and hasattr(config, 'GEMINI_NEWS_ANALYSIS') and config.GEMINI_NEWS_ANALYSIS:
+        try:
+            gemini_result = gemini_strategies.analyze_news_with_gemini(headlines, symbol, config)
+            if gemini_result:
+                gemini_score = gemini_result.get('sentiment_score', 0.0)
+                logger.info(f"   Gemini: skor={gemini_score:.3f}, urgency={gemini_result.get('urgency')}")
+        except Exception as e:
+            logger.warning(f"Gemini news analysis skipped: {e}")
+    
+    # Combine scores
+    if vader_score is not None and gemini_score is not None:
+        # Hybrid: VADER 40% + Gemini 60% (Gemini more reliable for context)
+        combined_score = (vader_score * 0.4) + (gemini_score * 0.6)
+        logger.info(f"'{symbol}' News Sentiment: VADER={vader_score:.3f}, Gemini={gemini_score:.3f}, Combined={combined_score:.3f}")
+        return combined_score
+    elif gemini_score is not None:
+        # Only Gemini available
+        logger.info(f"'{symbol}' News Sentiment: Gemini Only={gemini_score:.3f}")
+        return gemini_score
+    elif vader_score is not None:
+        # Only VADER available
+        logger.info(f"'{symbol}' News Sentiment: VADER Only={vader_score:.3f}")
+        return vader_score
+    else:
+        # No news found
+        logger.info(f"'{symbol}' için son {lookback_hours}s ilgili haber yok.")
+        return None
 
 def calculate_reddit_sentiment_for_symbol(symbol: str, reddit_posts: list, config: object) -> Optional[float]:
     # ... (Kod aynı, değişiklik yok) ...
