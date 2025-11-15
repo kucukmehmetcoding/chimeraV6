@@ -969,10 +969,11 @@ def run_multi_timeframe_scanner(stop_event):
             and s['status'] == 'TRADING'
         ]
         
-        logger.info(f"🎯 HTF-LTF Scanner başlatıldı (v11.0)")
+        logger.info(f"🎯 MEHMET'İN 3'LÜ EMA STRATEJİSİ başlatıldı (v12.0)")
         logger.info(f"   Scan interval: {scan_interval}s ({scan_interval/60:.1f} min)")
-        logger.info(f"   HTF Filter: {config.HTF_TIMEFRAME}")
-        logger.info(f"   LTF Trigger: {config.LTF_TIMEFRAME}")
+        logger.info(f"   Timeframe: 15M (kısa vadeli)")
+        logger.info(f"   Strateji: EMA5 x EMA20 + RSI > 50 + MACD > 0")
+        logger.info(f"   TP/SL: ATR bazlı (RR 2:1)")
         logger.info(f"   Coin pool: {len(coin_pool)} USDT pairs")
         
     except Exception as e:
@@ -987,7 +988,7 @@ def run_multi_timeframe_scanner(stop_event):
         try:
             scan_count += 1
             logger.info("\n" + "="*80)
-            logger.info(f"🔍 HTF-LTF SCAN #{scan_count} BAŞLIYOR")
+            logger.info(f"🔍 MEHMET 3'LÜ EMA SCAN #{scan_count} BAŞLIYOR")
             logger.info("="*80)
             logger.info(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             
@@ -997,8 +998,13 @@ def run_multi_timeframe_scanner(stop_event):
             ltf_no_trigger = 0  # LTF'de sinyal bulunamayan
             risk_rejected = 0  # Risk filter tarafından reddedilen
             
+            # 🎲 Rastgele sırayla tara (alfabetik bias önlemek için)
+            import random
+            shuffled_pool = list(coin_pool)
+            random.shuffle(shuffled_pool)
+            
             # Her coin için HTF-LTF analiz
-            for idx, symbol in enumerate(coin_pool, 1):
+            for idx, symbol in enumerate(shuffled_pool, 1):
                 try:
                     # Emergency stop check
                     if is_emergency_stop_active():
@@ -1011,69 +1017,32 @@ def run_multi_timeframe_scanner(stop_event):
                     logger.debug(f"[{idx}/{len(coin_pool)}] 🔍 {symbol}")
                     
                     # ═══════════════════════════════════════════════════════
-                    # STEP 1: Fetch HTF (1H) Data
+                    # MEHMET'İN BASİT 3'LÜ STRATEJİSİ
+                    # EMA5 x EMA20 + RSI > 50 + MACD > 0
                     # ═══════════════════════════════════════════════════════
                     from src.data_fetcher.binance_fetcher import get_binance_klines
+                    from src.technical_analyzer.ema_simple_strategy import analyze_ema_simple_signal, calculate_atr_sl_tp
                     
-                    df_1h = get_binance_klines(
-                        symbol=symbol,
-                        interval=config.HTF_TIMEFRAME,
-                        limit=config.HTF_CANDLE_LIMIT
-                    )
-                    
-                    if df_1h is None or df_1h.empty:
-                        logger.debug(f"   ⚠️ {symbol}: 1H data alınamadı")
-                        continue
-                    
-                    # Add HTF indicators
-                    df_1h = add_htf_indicators(df_1h, config.HTF_TIMEFRAME)
-                    
-                    # ═══════════════════════════════════════════════════════
-                    # STEP 2: HTF Filter Check (Layer 1)
-                    # ═══════════════════════════════════════════════════════
-                    from src.technical_analyzer.htf_ltf_strategy import check_htf_filter_1h
-                    
-                    allowed_direction = check_htf_filter_1h(df_1h, symbol)
-                    
-                    if allowed_direction is None:
-                        # HTF kararsız - coin atla
-                        htf_filtered += 1
-                        logger.debug(f"   ⛔ {symbol}: HTF kararsız (atlandı)")
-                        continue
-                    
-                    # HTF izin veriyor - LTF'ye geç
-                    logger.info(f"\n[{idx}/{len(coin_pool)}] ✅ {symbol}: HTF → {allowed_direction} izni var")
-                    
-                    # ═══════════════════════════════════════════════════════
-                    # STEP 3: Fetch LTF (15M) Data
-                    # ═══════════════════════════════════════════════════════
+                    # 15M data çek (kısa vadeli işlemler)
                     df_15m = get_binance_klines(
                         symbol=symbol,
-                        interval=config.LTF_TIMEFRAME,
-                        limit=config.LTF_CANDLE_LIMIT
+                        interval='15m',  # Kısa vadeli
+                        limit=100
                     )
                     
                     if df_15m is None or df_15m.empty:
                         logger.debug(f"   ⚠️ {symbol}: 15M data alınamadı")
                         continue
                     
-                    # Add LTF indicators
-                    df_15m = add_ltf_indicators(df_15m, config.LTF_TIMEFRAME)
+                    # İndikatörleri ekle (EMA5, EMA20, RSI, MACD)
+                    df_15m = add_ltf_indicators(df_15m, '15m')
                     
-                    # ═══════════════════════════════════════════════════════
-                    # STEP 4: Full HTF-LTF Analysis
-                    # ═══════════════════════════════════════════════════════
-                    signal = analyze_htf_ltf_signal(
-                        df_1h=df_1h,
-                        df_15m=df_15m,
-                        symbol=symbol,
-                        max_atr_percent=config.SCALP_MAX_ATR_PERCENT,
-                        volume_confirmation_required=config.VOLUME_CONFIRMATION_REQUIRED
-                    )
+                    # 3'lü kombinasyonu kontrol et
+                    signal = analyze_ema_simple_signal(df_15m, symbol)
                     
                     if signal is None:
-                        # LTF trigger veya risk filter başarısız
-                        logger.debug(f"   ⚠️ {symbol}: LTF trigger veya risk filter başarısız")
+                        # 3'lü kombinasyon tutmadı
+                        logger.debug(f"   ⚠️ {symbol}: 3'lü kombinasyon tutmadı")
                         ltf_no_trigger += 1
                         continue
                     
@@ -1082,32 +1051,25 @@ def run_multi_timeframe_scanner(stop_event):
                     # ═══════════════════════════════════════════════════════
                     signals_found += 1
                     
-                    logger.info(f"\n{'🎯'*30}")
-                    logger.info(f"✅ VALID SIGNAL: {symbol}")
-                    logger.info(f"{'🎯'*30}")
-                    logger.info(f"   Direction: {signal['signal']}")
-                    logger.info(f"   Entry Price: ${signal['entry_price']:.4f}")
-                    logger.info(f"   HTF Direction: {signal['htf_direction']}")
-                    logger.info(f"   LTF EMA5: {signal['ltf_trigger']['ema5']:.4f}")
-                    logger.info(f"   LTF EMA20: {signal['ltf_trigger']['ema20']:.4f}")
-                    logger.info(f"   LTF RSI: {signal['ltf_trigger']['rsi']:.1f}")
-                    logger.info(f"   Crossover: {signal['ltf_trigger']['crossover_candle']}")
+                    # Signal zaten ema_simple_strategy.py'de loglandı
+                    # Burada sadece TP/SL hesapla
+                    tp_sl_data = calculate_atr_sl_tp(
+                        df=df_15m,
+                        entry_price=signal['entry_price'],
+                        direction=signal['signal']
+                    )
+                    
+                    # TP/SL'yi signal'e ekle
+                    signal['sl_price'] = tp_sl_data['sl_price']
+                    signal['tp_price'] = tp_sl_data['tp_price']
+                    signal['atr'] = tp_sl_data['atr']
                     
                     # ═══════════════════════════════════════════════════════
                     # STEP 6: Open Position
                     # ═══════════════════════════════════════════════════════
                     try:
-                        # Convert signal to expected format for execute_multi_timeframe_position
-                        formatted_signal = {
-                            'signal': signal['signal'],
-                            'entry_price': signal['entry_price'],
-                            'confidence': 0.7,  # HTF-LTF signals have good confidence
-                            'source': 'htf_ltf_v11',
-                            'htf_direction': signal['htf_direction'],
-                            'ltf_trigger': signal['ltf_trigger']
-                        }
-                        
-                        position_opened = execute_multi_timeframe_position(symbol, formatted_signal)
+                        # Signal zaten doğru formatta (ema_simple_strategy'den)
+                        position_opened = execute_multi_timeframe_position(symbol, signal)
                         
                         if position_opened:
                             positions_opened += 1
@@ -1116,15 +1078,16 @@ def run_multi_timeframe_scanner(stop_event):
                             # Telegram alert
                             try:
                                 alert_msg = (
-                                    f"🎯 *HTF-LTF SIGNAL (v11.0)*\n\n"
+                                    f"🎯 *MEHMET 3'LÜ KOMBİNASYON*\n\n"
                                     f"*Symbol:* `{symbol}`\n"
                                     f"*Direction:* {signal['signal']}\n"
                                     f"*Entry:* ${signal['entry_price']:.4f}\n\n"
-                                    f"*HTF Filter (1H):* {signal['htf_direction']} izni\n"
-                                    f"*LTF Trigger (15M):* EMA crossover\n"
-                                    f"  - RSI: {signal['ltf_trigger']['rsi']:.1f}\n"
-                                    f"  - MACD Hist: {signal['ltf_trigger']['macd_hist']:.4f}\n\n"
-                                    f"_Multi-layer filtering: HTF trend + LTF timing + Risk checks_"
+                                    f"*✅ EMA5 x EMA20:* Yukarı kesişim\n"
+                                    f"*✅ RSI:* {signal['rsi']:.1f} > 50\n"
+                                    f"*✅ MACD:* {signal['macd_hist']:.6f} > 0\n\n"
+                                    f"*SL:* ${signal['sl_price']:.4f}\n"
+                                    f"*TP:* ${signal['tp_price']:.4f}\n"
+                                    f"_ATR Bazlı RR: 2:1_"
                                 )
                                 telegram_notifier.send_message(alert_msg)
                             except Exception as tg_error:
@@ -1145,14 +1108,13 @@ def run_multi_timeframe_scanner(stop_event):
             
             # Scan özeti
             logger.info("\n" + "="*80)
-            logger.info(f"📊 HTF-LTF SCAN #{scan_count} TAMAMLANDI")
+            logger.info(f"📊 MEHMET 3'LÜ EMA SCAN #{scan_count} TAMAMLANDI")
             logger.info("="*80)
-            logger.info(f"   Scanned coins: {len(coin_pool)}")
-            logger.info(f"   HTF filtered: {htf_filtered} (kararsız trend)")
-            logger.info(f"   LTF checked: {len(coin_pool) - htf_filtered}")
-            logger.info(f"   Signals found: {signals_found}")
-            logger.info(f"   Positions opened: {positions_opened}")
-            logger.info(f"   Next scan: {scan_interval}s ({scan_interval/60:.1f} min)")
+            logger.info(f"   Taranan coin: {len(coin_pool)}")
+            logger.info(f"   Sinyal bulunan: {signals_found}")
+            logger.info(f"   Pozisyon açılan: {positions_opened}")
+            logger.info(f"   3'lü kombinasyon tutmayan: {ltf_no_trigger}")
+            logger.info(f"   Sonraki scan: {scan_interval}s ({scan_interval/60:.1f} min)")
             logger.info("="*80 + "\n")
             
             # Bir sonraki scan'e kadar bekle

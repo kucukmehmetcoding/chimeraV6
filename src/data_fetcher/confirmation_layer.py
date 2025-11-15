@@ -277,33 +277,52 @@ class ConfirmationLayer:
     
     def _score_strength(self, indicators: Dict) -> float:
         """
-        Score trend strength via ADX (25 points max)
+        Score trend strength via ADX (25 points max) - V12.0 SMOOTH TRANSITIONS
         
-        ADX > 25: Strong trend → Full points (25)
-        ADX 15-25: Medium trend → Scaled (10-25)
-        ADX < 15: Weak trend → Low points (0-10)
+        Uses sigmoid curve instead of binary thresholds for smooth scoring
+        
+        ADX transition curve:
+        - < 10: Very weak (0-5 pts)
+        - 10-20: Weak to medium (5-15 pts) - SMOOTH
+        - 20-30: Medium to strong (15-22 pts) - SMOOTH
+        - > 30: Very strong (22-25 pts)
         """
         max_points = self.weights['strength']
         adx = indicators['adx14']
         
-        if adx >= self.adx_strong_threshold:
-            # Strong trend
+        # V12.0: Sigmoid-based smooth scoring
+        import math
+        
+        if adx >= 30:
+            # Very strong trend - full points
             score = max_points
-            logger.debug(f"   ✅ Strong trend (ADX={adx:.1f}): {score} pts")
-        
-        elif adx >= self.adx_weak_threshold:
-            # Medium trend - scale linearly
-            ratio = (adx - self.adx_weak_threshold) / (self.adx_strong_threshold - self.adx_weak_threshold)
-            score = max_points * 0.4 + (max_points * 0.6 * ratio)  # 10-25 points
-            logger.debug(f"   ⚠️ Medium trend (ADX={adx:.1f}): {score:.1f} pts")
-        
+        elif adx >= 20:
+            # Strong trend zone - smooth transition
+            # Sigmoid curve from 15 to 22 points
+            ratio = (adx - 20) / 10  # 0 to 1 over 20-30 range
+            score = 15 + (7 * self._sigmoid(ratio * 4 - 2))  # Smooth 15-22
+        elif adx >= 10:
+            # Medium trend zone - smooth transition  
+            # Sigmoid curve from 5 to 15 points
+            ratio = (adx - 10) / 10  # 0 to 1 over 10-20 range
+            score = 5 + (10 * self._sigmoid(ratio * 4 - 2))  # Smooth 5-15
         else:
-            # Weak trend
-            ratio = adx / self.adx_weak_threshold
-            score = max_points * 0.4 * ratio  # 0-10 points
-            logger.debug(f"   ❌ Weak trend (ADX={adx:.1f}): {score:.1f} pts")
+            # Weak trend - minimal points
+            ratio = adx / 10  # 0 to 1 over 0-10 range
+            score = 5 * ratio  # Linear 0-5
+        
+        logger.debug(f"   {'✅' if score > 15 else '⚠️' if score > 8 else '❌'} Trend strength (ADX={adx:.1f}): {score:.1f} pts")
         
         return score
+    
+    def _sigmoid(self, x: float) -> float:
+        """
+        Sigmoid activation function for smooth transitions
+        
+        Returns value between 0 and 1
+        """
+        import math
+        return 1 / (1 + math.exp(-x))
     
     def _score_momentum(self, indicators: Dict, signal_direction: str) -> float:
         """

@@ -42,7 +42,7 @@ else:
     print(f"🔍 Config Debug: LIVE MODE - API Key başlangıcı: {BINANCE_API_KEY[:10]}...")
 
 # --- Binance Futures Trading Ayarları (v5.0) ---
-FUTURES_LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", 10))  # Sabit kaldıraç (tüm pozisyonlar)
+FUTURES_LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", 10))  # Sabit kaldıraç (tüm pozisyonlar) - 10x
 FUTURES_MARGIN_TYPE = os.getenv("FUTURES_MARGIN_TYPE", "ISOLATED")  # ISOLATED veya CROSS
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN_PLACEHOLDER")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID_PLACEHOLDER")
@@ -113,6 +113,36 @@ NEWS_MAX_ARTICLES = int(os.getenv("NEWS_MAX_ARTICLES", 30))  # Articles per anal
 # --- AI Response Thresholds ---
 AI_MIN_CONFIDENCE_FOR_APPROVAL = float(os.getenv("AI_MIN_CONFIDENCE_FOR_APPROVAL", 6.0))  # 0-10 scale
 AI_REJECTION_THRESHOLD = float(os.getenv("AI_REJECTION_THRESHOLD", 4.0))  # Below this = reject signal
+
+# ============================================================================
+# 🤖 AI TRADING SIGNAL GENERATION (v12.0: DeepSeek + Gemini Hybrid)
+# ============================================================================
+
+# --- AI Trading Mode ---
+AI_TRADING_ENABLED = os.getenv("AI_TRADING_ENABLED", "False").lower() == "true"  # Master switch for AI signals
+AI_TRADING_MODE = os.getenv("AI_TRADING_MODE", "HYBRID")  # FULL (AI only), HYBRID (AI + traditional), ASSIST (AI validates traditional)
+
+# --- AI Signal Confidence Thresholds ---
+MIN_AI_CONFIDENCE_SCORE = int(os.getenv("MIN_AI_CONFIDENCE_SCORE", 70))  # Minimum confidence to open position (0-100)
+AI_FALLBACK_THRESHOLD = int(os.getenv("AI_FALLBACK_THRESHOLD", 60))  # Below this, ask Gemini for second opinion
+AI_CONSENSUS_BOOST = int(os.getenv("AI_CONSENSUS_BOOST", 15))  # Confidence boost when both AIs agree
+
+# --- Gemini Fallback Settings ---
+AI_FALLBACK_ENABLED = os.getenv("AI_FALLBACK_ENABLED", "True").lower() == "true"  # Use Gemini as fallback
+MAX_DAILY_GEMINI_CALLS = int(os.getenv("MAX_DAILY_GEMINI_CALLS", 30))  # Cost control (Flash: ~$0.10/call = $3/day)
+
+# --- AI Models for Trading ---
+DEEPSEEK_TRADING_MODEL = os.getenv("DEEPSEEK_TRADING_MODEL", "deepseek-chat")  # Free, unlimited
+GEMINI_TRADING_MODEL = os.getenv("GEMINI_TRADING_MODEL", "gemini-2.5-flash")  # Fast, cheap ($0.10/1M tokens)
+
+# --- AI Signal Validation ---
+AI_VALIDATE_RR_RATIO = os.getenv("AI_VALIDATE_RR_RATIO", "True").lower() == "true"  # Check risk/reward logic
+AI_MIN_RR_RATIO = float(os.getenv("AI_MIN_RR_RATIO", 1.5))  # Minimum R:R for AI signals (1.5 = 1:1.5)
+AI_MAX_PRICE_DEVIATION_PERCENT = float(os.getenv("AI_MAX_PRICE_DEVIATION_PERCENT", 5.0))  # Entry price vs current (sanity check)
+
+# --- AI vs Traditional Strategy ---
+TRADITIONAL_STRATEGIES_ENABLED = os.getenv("TRADITIONAL_STRATEGIES_ENABLED", "True").lower() == "true"  # Keep traditional strategies active
+AI_OVERRIDE_TRADITIONAL = os.getenv("AI_OVERRIDE_TRADITIONAL", "False").lower() == "true"  # AI signals override traditional if conflict
 
 # Legacy Gemini backward compatibility
 GEMINI_NEWS_ANALYSIS = AI_NEWS_ANALYSIS
@@ -234,8 +264,11 @@ BLACKLISTED_SYMBOLS = {
 # --- Risk Yönetimi (v8.0 HİBRİT SİSTEM) ---
 USE_FIXED_RISK_USD = True  # True: Sabit risk ($), False: Portföy yüzdesi
 FIXED_RISK_USD = float(os.getenv("FIXED_RISK_USD", 20.0))  # Sabit risk miktarı (USD)
-# v9.0 PRECISION: Minimum RR oranı yükseltildi
-MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 0.95))  # Geçici minimal gevşetme: 1.5 → 0.95
+# v12.0 RESTORED: Minimum RR oranı discipline restore edildi
+MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 1.2))  # 0.95 → 1.2 (balanced, was 1.5)
+MIN_RR_RATIO_GRADE_A = float(os.getenv("MIN_RR_RATIO_GRADE_A", 1.0))  # A-grade için relaxed
+MIN_RR_RATIO_GRADE_B = float(os.getenv("MIN_RR_RATIO_GRADE_B", 1.2))  # B-grade için standard
+MIN_RR_RATIO_GRADE_C = float(os.getenv("MIN_RR_RATIO_GRADE_C", 1.5))  # C-grade için strict
 USE_REAL_BALANCE = os.getenv("USE_REAL_BALANCE", "True").lower() == "true"  # Gerçek bakiyeyi Binance'den al
 
 # 🎯 v9.0 PRECISION MODE: KALİTELİ SİNYALLERE YÜKSEK POZİSYON
@@ -248,30 +281,37 @@ FIXED_RISK_USD = float(os.getenv('FIXED_RISK_USD', '30.0'))  # $15 → $30 (2x a
 # Kullanıcı talebi: "Günde 1-2 pozisyon, kullanılan margin çok düşük (5 USD)"
 # ÖNEMLİ: Bu değer MARGIN (teminat), position value DEĞİL!
 # Örnek: 150 USD margin × 8x kaldıraç = 1200 USD position value
-MIN_MARGIN_USD = float(os.getenv('MIN_MARGIN_USD', '10.0'))   # Minimum kullanılan margin (İSTENEN: $10)
-MAX_MARGIN_USD = float(os.getenv('MAX_MARGIN_USD', '30.0'))   # Maksimum kullanılan margin (İSTENEN: $30)
+MIN_MARGIN_USD = float(os.getenv('MIN_MARGIN_USD', '5.0'))   # Minimum kullanılan margin - 5x kaldıraç ile 25$ pozisyon
+MAX_MARGIN_USD = float(os.getenv('MAX_MARGIN_USD', '5.0'))   # Maksimum kullanılan margin - sabit 5$
 
 # Eski değerler (yedek - artık kullanılmıyor)
-MIN_POSITION_VALUE_USD = MIN_MARGIN_USD * 8  # Geriye dönük uyumluluk için
-MAX_POSITION_VALUE_USD = MAX_MARGIN_USD * 8  # Geriye dönük uyumluluk için
+MIN_POSITION_VALUE_USD = MIN_MARGIN_USD * 10  # Geriye dönük uyumluluk için (10x kaldıraç)
+MAX_POSITION_VALUE_USD = MAX_MARGIN_USD * 10  # Geriye dönük uyumluluk için (10x kaldıraç)
 
 BASE_RISK_PERCENT = 1.0  # Varsayılan %1 risk (dinamik sistem kapalıysa)
 
-# v9.0 PRECISION: Az ama kaliteli sinyal → Pozisyon limitleri ARTTIRILDI
-# v11.1 LIVE MODE: 20'den 15'e düşürüldü (canlı mod için güvenlik)
-MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", 15))  # 3 → 7 → 20 → 15
-MAX_RISK_PER_GROUP = float(os.getenv("MAX_RISK_PER_GROUP", 30.0))  # 15.0 → 30.0 (kaliteli sinyallere daha fazla risk)
+# v12.0 BALANCED: Pozisyon limitleri balanced restore
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", 15))  # 30 → 15 (over-diversification önleme)
+MAX_RISK_PER_GROUP = float(os.getenv("MAX_RISK_PER_GROUP", 15.0))  # 30.0 → 15.0 (risk yoğunlaşması önleme)
 USE_KELLY_ADJUSTMENT = os.getenv("USE_KELLY_ADJUSTMENT", "True").lower() == "true"  # Kelly Criterion aktif
 # 🆕 v9.3: Kelly maksimum fraksiyon limiti (ek güvenlik)
 KELLY_MAX_FRACTION = float(os.getenv("KELLY_MAX_FRACTION", 0.15))  # Kelly yüzdesi üst sınırı (örn. %15)
-# v9.0 PRECISION: MIN RR oranı 1.5'e sabitlendi (kaliteli işlemler)
-MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 0.95))  # Geçici minimal gevşetme: 1.5 → 0.95
+# v12.0 RESTORED: MIN RR oranı discipline restore edildi (strategy-specific overrides)
+MIN_RR_RATIO = float(os.getenv("MIN_RR_RATIO", 1.2))  # 0.95 → 1.2 balanced restore
 MAX_POSITIONS_PER_SYMBOL = int(os.getenv("MAX_POSITIONS_PER_SYMBOL", 1))
+
+# v12.0 NEW: Quality grade-based position sizing multipliers
+QUALITY_MARGIN_MULTIPLIERS = {
+    'A': float(os.getenv("QUALITY_MULTIPLIER_A", 1.5)),  # A-grade sinyaller için 1.5x margin
+    'B': float(os.getenv("QUALITY_MULTIPLIER_B", 1.0)),  # B-grade standart
+    'C': float(os.getenv("QUALITY_MULTIPLIER_C", 0.6)),  # C-grade azaltılmış
+    'D': float(os.getenv("QUALITY_MULTIPLIER_D", 0.0))   # D-grade hiç pozisyon açma
+}
 
 # 🆕 v11.3: CONFLUENCE SCORING SYSTEM
 # Multi-timeframe kalite skoru: HTF (1H) + LTF (15M) + Sentiment
-# Max score: ~8.6/10 → Minimum 5.0 gerekli (win rate optimization)
-MIN_CONFLUENCE_SCORE = float(os.getenv("MIN_CONFLUENCE_SCORE", 5.0))  # v11.3.2: 7.0 → 5.0 for balanced signal flow
+# Max score: ~8.6/10 → Minimum 3.5 gerekli (basitleştirilmiş, daha fazla sinyal)
+MIN_CONFLUENCE_SCORE = float(os.getenv("MIN_CONFLUENCE_SCORE", 3.5))  # v11.4: 5.0 → 3.5 basitleştirme
 
 # 🔄 BREAKOUT L1 scalp fallback toggle
 ENABLE_BREAKOUT_SCALP_FALLBACK = os.getenv("ENABLE_BREAKOUT_SCALP_FALLBACK", "True").lower() == "true"
@@ -818,10 +858,10 @@ LTF_MACD_SLOW = 26         # 15M MACD slow
 LTF_MACD_SIGNAL = 9        # 15M MACD signal
 
 # --- LTF (15M) Signal Thresholds ---
-LTF_RSI_BULL_MIN = 50      # LONG için minimum RSI
-LTF_RSI_BULL_MAX = 75      # LONG için maximum RSI (aşırı şişme filtresi)
-LTF_RSI_BEAR_MIN = 25      # SHORT için minimum RSI (aşırı satış filtresi)
-LTF_RSI_BEAR_MAX = 50      # SHORT için maximum RSI
+LTF_RSI_BULL_MIN = 45      # LONG için minimum RSI (50 → 45 basitleştirme)
+LTF_RSI_BULL_MAX = 85      # LONG için maximum RSI (75 → 85 daha esnek)
+LTF_RSI_BEAR_MIN = 15      # SHORT için minimum RSI (25 → 15 daha esnek)
+LTF_RSI_BEAR_MAX = 55      # SHORT için maximum RSI (50 → 55 basitleştirme)
 
 # --- Risk Filters ---
 SCALP_MAX_ATR_PERCENT = 2.0      # Maksimum ATR % (volatilite filtresi)

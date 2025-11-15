@@ -82,6 +82,12 @@ class WebSocketKlineManager:
         self.ema_cache = {}  # symbol -> {prev_ema5, prev_ema20, current_ema5, current_ema20}
         self.ema_cache_lock = Lock()
         
+        # 🆕 v12.1: Near-miss signal monitoring with priority queue
+        self.near_miss_symbols = {}  # symbol -> {priority_score, added_at, near_miss_id}
+        self.near_miss_lock = Lock()
+        self.max_near_miss_subscriptions = 20  # Max concurrent near-miss streams
+        self.on_near_miss_price_update: Optional[Callable] = None  # Callback for price updates
+        
         logger.info(f"✅ WebSocket Manager initialized (Interval: {self.interval}, Testnet: {self.testnet})")
     
     def start(self) -> bool:
@@ -294,6 +300,14 @@ class WebSocketKlineManager:
                     if self.on_error_callback:
                         self.on_error_callback(e, kline_data)
             
+            # 🆕 v12.1: Near-miss price update callback
+            if symbol in self.near_miss_symbols and self.on_near_miss_price_update:
+                try:
+                    # Send current price to near-miss monitor
+                    self.on_near_miss_price_update(symbol, kline_data['close'], kline_data['is_closed'])
+                except Exception as e:
+                    logger.error(f"❌ Error in near-miss price callback for {symbol}: {e}", exc_info=True)
+            
             # Debug log (every 10th message to reduce noise)
             if self.message_count % 10 == 0:
                 status = "CLOSED" if kline_data['is_closed'] else "OPEN"
@@ -413,6 +427,115 @@ class WebSocketKlineManager:
             else:
                 self.ema_cache.clear()
                 logger.debug("All EMA cache cleared")
+    
+    # ============================================================================
+    # 🆕 v12.1: NEAR-MISS SIGNAL MONITORING
+    # ============================================================================
+    
+    def subscribe_near_miss(self, symbol: str, priority_score: float, near_miss_id: int) -> bool:
+        """
+        Subscribe to a near-miss signal with priority management.
+        Maintains max 20 concurrent subscriptions, auto-pruning lowest priority.
+        
+        Args:
+            symbol: Trading pair
+            priority_score: Combined quality + criteria score for prioritization
+            near_miss_id: Database ID of the NearMissSignal record
+            
+        Returns:
+            bool: True if subscribed successfully
+        """
+        with self.near_miss_lock:
+            # If already subscribed, update priority if higher
+            if symbol in self.near_miss_symbols:
+                existing = self.near_miss_symbols[symbol]
+                if priority_score > existing['priority_score']:
+                    logger.info(f"📈 Updating {symbol} near-miss priority: "
+                              f"{existing['priority_score']:.2f} → {priority_score:.2f}")
+                    existing['priority_score'] = priority_score
+                    existing['near_miss_id'] = near_miss_id
+                return True
+            
+            # Check if at capacity
+            if len(self.near_miss_symbols) >= self.max_near_miss_subscriptions:
+                # Find lowest priority symbol
+                lowest_symbol = min(
+                    self.near_miss_symbols.items(),
+                    key=lambda x: x[1]['priority_score']
+                )
+                lowest_priority = lowest_symbol[1]['priority_score']
+                
+                # Only replace if new signal has higher priority
+                if priority_score <= lowest_priority:
+                    logger.debug(f"🚫 Cannot add {symbol} (priority {priority_score:.2f}) - "
+                               f"all slots filled with higher priority signals")
+                    return False
+                
+                # Unsubscribe lowest priority
+                logger.info(f"🔄 Replacing {lowest_symbol[0]} (priority {lowest_priority:.2f}) "
+                          f"with {symbol} (priority {priority_score:.2f})")
+                self.unsubscribe_near_miss(lowest_symbol[0])
+            
+            # Subscribe to symbol if not already subscribed
+            if not self.subscribe_symbol(symbol):
+                logger.error(f"❌ Failed to subscribe WebSocket for near-miss {symbol}")
+                return False
+            
+            # Add to near-miss tracking
+            self.near_miss_symbols[symbol] = {
+                'priority_score': priority_score,
+                'added_at': time.time(),
+                'near_miss_id': near_miss_id
+            }
+            
+            logger.info(f"✅ Near-miss subscribed: {symbol} (priority: {priority_score:.2f}, "
+                       f"active: {len(self.near_miss_symbols)}/{self.max_near_miss_subscriptions})")
+            return True
+    
+    def unsubscribe_near_miss(self, symbol: str) -> bool:
+        """
+        Unsubscribe from a near-miss signal.
+        
+        Args:
+            symbol: Trading pair
+            
+        Returns:
+            bool: True if unsubscribed successfully
+        """
+        with self.near_miss_lock:
+            if symbol not in self.near_miss_symbols:
+                return True
+            
+            # Remove from tracking
+            del self.near_miss_symbols[symbol]
+            
+            # Unsubscribe from WebSocket (only if no other systems need it)
+            # Check if symbol is still needed for regular monitoring
+            if symbol not in self.symbols or symbol in self.near_miss_symbols:
+                # Still needed, don't unsubscribe
+                logger.debug(f"   {symbol} still needed by other systems, keeping subscription")
+                return True
+            
+            # Safe to unsubscribe
+            success = self.unsubscribe_symbol(symbol)
+            if success:
+                logger.info(f"✅ Near-miss unsubscribed: {symbol}")
+            return success
+    
+    def get_near_miss_subscriptions(self) -> Dict:
+        """
+        Get current near-miss subscriptions.
+        
+        Returns:
+            Dict of symbol -> {priority_score, added_at, near_miss_id}
+        """
+        with self.near_miss_lock:
+            return self.near_miss_symbols.copy()
+    
+    def is_near_miss_subscribed(self, symbol: str) -> bool:
+        """Check if symbol is subscribed for near-miss monitoring"""
+        with self.near_miss_lock:
+            return symbol in self.near_miss_symbols
 
 
 # Module-level instance (singleton pattern)

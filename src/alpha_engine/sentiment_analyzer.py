@@ -180,7 +180,9 @@ def fetch_fear_and_greed_index() -> Optional[int]:
             index_value = int(index_text); logger.info(f"✅ F&G Index: {index_value}"); return index_value
         else:
             logger.error(f"F&G Index değeri sayısal değil: '{index_text}'"); return None
-    except Exception as e: logger.error(f"F&G Index çekme hatası: {e}", exc_info=True); return None
+    except Exception as e: 
+        logger.warning(f"⚠️ F&G Index çekme hatası (internet bağlantısı), default=50 kullanılıyor")
+        return 50  # Default neutral value
 
 def fetch_rss_feeds(rss_urls: list) -> List[Dict[str, Any]]:
     """

@@ -32,8 +32,9 @@ if project_root not in sys.path:
 import src.config as config
 from src.data_fetcher.binance_fetcher import get_binance_klines, binance_client
 from src.technical_analyzer.range_strategy import analyze_range_signal
-from src.database.models import OpenPosition, db_session
+from src.database.models import OpenPosition, NearMissSignal, db_session
 from src.notifications import telegram as telegram_notifier
+from src.utils.near_miss_detector import calculate_near_miss_score, create_near_miss_record, log_near_miss_detection
 # Trade manager için kendi monitoring fonksiyonu kullanacağız (import yok)
 
 # Logging
@@ -80,10 +81,18 @@ USE_HTF_CONFIRMATION = os.getenv('RANGE_USE_HTF_CONFIRMATION', 'True').lower() =
 HTF_TIMEFRAME = os.getenv('RANGE_HTF_TIMEFRAME', '1h')
 HTF_MIN_OVERLAP = float(os.getenv('RANGE_HTF_MIN_OVERLAP', '0.7'))
 
+# Near-Miss Signal Monitoring (v12.1)
+NEAR_MISS_ENABLED = os.getenv('RANGE_NEAR_MISS_ENABLED', 'True').lower() == 'true'
+NEAR_MISS_THRESHOLD_PERCENT = float(os.getenv('RANGE_NEAR_MISS_THRESHOLD_PERCENT', '0.90'))
+NEAR_MISS_MAX_ACTIVE = int(os.getenv('RANGE_NEAR_MISS_MAX_ACTIVE', '20'))
+NEAR_MISS_TTL_MINUTES = int(os.getenv('RANGE_NEAR_MISS_TTL_MINUTES', '10'))
+NEAR_MISS_CHECK_INTERVAL = int(os.getenv('RANGE_NEAR_MISS_CHECK_INTERVAL', '30'))
+
 logger.info(f"📊 Range Bot Configuration Loaded:")
 logger.info(f"  Leverage: {LEVERAGE}x | Margin: ${MARGIN_PER_TRADE} | Max Positions: {MAX_OPEN_POSITIONS}")
 logger.info(f"  Min Range Width: {MIN_RANGE_WIDTH*100:.1f}% | Min RR: {MIN_RR_RATIO}:1")
 logger.info(f"  Quality Filter: {MIN_QUALITY}+ | HTF Confirmation: {USE_HTF_CONFIRMATION}")
+logger.info(f"  Near-Miss Monitoring: {NEAR_MISS_ENABLED} | Threshold: {NEAR_MISS_THRESHOLD_PERCENT*100:.0f}% | TTL: {NEAR_MISS_TTL_MINUTES}min")
 
 # Symbol precision cache
 SYMBOL_PRECISION_CACHE = {}
@@ -182,10 +191,15 @@ def get_current_open_positions_count():
         db_session.remove()
 
 
-def open_range_position(symbol: str, signal: dict):
+def open_range_position(symbol: str, signal: dict, source: str = 'scan'):
     """
     Range sinyali için kaldıraçlı pozisyon aç.
     Binance otomatik SL/TP emirleri ile.
+    
+    Args:
+        symbol: Trading pair
+        signal: Signal dict with entry, sl, tp, etc.
+        source: 'scan' or 'near_miss' for tracking
     """
     try:
         # Pozisyon limiti kontrolü
@@ -374,16 +388,19 @@ def open_range_position(symbol: str, signal: dict):
                 strategy='range_trading',
                 support_level=signal.get('support'),
                 resistance_level=signal.get('resistance'),
-                range_width=signal.get('range_width', 0)
+                range_width=signal.get('range_width', 0),
+                source=source  # 'scan' or 'near_miss'
             )
             db.add(position)
             db.commit()
             
-            logger.info(f"✅ Pozisyon database'e kaydedildi (ID: {position.id})")
+            # Source-specific logging
+            source_emoji = "⚡" if source == 'near_miss' else "📊"
+            logger.info(f"✅ {source_emoji} Pozisyon database'e kaydedildi (ID: {position.id}, source: {source})")
             logger.info(f"🎯 Binance otomatik SL/TP aktif - manuel kontrol gerekmez!")
             
             # Telegram bildirim
-            send_position_opened_alert(symbol, signal, profit_usd, loss_usd, rr_ratio)
+            send_position_opened_alert(symbol, signal, profit_usd, loss_usd, rr_ratio, source)
             
             return True
         
@@ -399,8 +416,8 @@ def open_range_position(symbol: str, signal: dict):
         return False
 
 
-def send_position_opened_alert(symbol: str, signal: dict, profit_usd: float, loss_usd: float, rr_ratio: float):
-    """Pozisyon açıldı Telegram bildirimi."""
+def send_position_opened_alert(symbol: str, signal: dict, profit_usd: float, loss_usd: float, rr_ratio: float, source: str = 'scan'):
+    """Pozisyon açıldı Telegram bildirimi. Source: 'scan' or 'near_miss'"""
     try:
         direction_emoji = "🟢" if signal['signal'] == 'LONG' else "🔴"
         
@@ -519,25 +536,11 @@ def range_scanner_thread():
                     if signal:
                         signals_found += 1
                         
-                        # ════════════════════════════════════════════════
-                        # ✅ YENİ: RANGE QUALITY FİLTRESİ
-                        # ════════════════════════════════════════════════
+                        # Extract all metrics for near-miss detection
                         range_quality = signal.get('range_quality', 'D')
-                        if range_quality in ['C', 'D']:
-                            logger.warning(f"   ❌ {symbol} range kalitesi düşük ({range_quality}), skip")
-                            continue
-                        
-                        # ════════════════════════════════════════════════
-                        # ✅ YENİ: FALSE BREAKOUT FİLTRESİ
-                        # ════════════════════════════════════════════════
+                        quality_score = signal.get('quality_score', 0)
+                        range_width = signal.get('range_width', 0)
                         false_breakouts = signal.get('false_breakouts', [])
-                        if len(false_breakouts) > 2:
-                            logger.warning(f"   ❌ {symbol} çok fazla false breakout ({len(false_breakouts)}), skip")
-                            continue
-                        
-                        # ════════════════════════════════════════════════
-                        # ✅ YENİ: RISK-REWARD FİLTRESİ
-                        # ════════════════════════════════════════════════
                         entry_price = signal['entry_price']
                         tp_price = signal['tp_price']
                         sl_price = signal['sl_price']
@@ -545,38 +548,127 @@ def range_scanner_thread():
                         risk = abs(entry_price - sl_price)
                         reward = abs(tp_price - entry_price)
                         rr_ratio = reward / risk if risk > 0 else 0
+                        sl_distance_pct = risk / entry_price
                         
-                        if rr_ratio < MIN_RR_RATIO:
+                        # Track rejection flags
+                        rejected = False
+                        rejection_details = []
+                        
+                        # ════════════════════════════════════════════════
+                        # ✅ YENİ: RANGE QUALITY FİLTRESİ
+                        # ════════════════════════════════════════════════
+                        if range_quality in ['C', 'D']:
+                            logger.warning(f"   ❌ {symbol} range kalitesi düşük ({range_quality}), skip")
+                            rejected = True
+                            rejection_details.append('quality')
+                        
+                        # ════════════════════════════════════════════════
+                        # ✅ YENİ: FALSE BREAKOUT FİLTRESİ
+                        # ════════════════════════════════════════════════
+                        if not rejected and len(false_breakouts) > 2:
+                            logger.warning(f"   ❌ {symbol} çok fazla false breakout ({len(false_breakouts)}), skip")
+                            rejected = True
+                            rejection_details.append('false_breakouts')
+                        
+                        # ════════════════════════════════════════════════
+                        # ✅ YENİ: RISK-REWARD FİLTRESİ
+                        # ════════════════════════════════════════════════
+                        if not rejected and rr_ratio < MIN_RR_RATIO:
                             logger.warning(f"   ❌ {symbol} RR çok düşük ({rr_ratio:.2f} < {MIN_RR_RATIO}), skip")
-                            continue
+                            rejected = True
+                            rejection_details.append('rr_ratio')
                         
                         # ════════════════════════════════════════════════
                         # ✅ YENİ: SL MESAFE FİLTRESİ
                         # ════════════════════════════════════════════════
-                        sl_distance_pct = risk / entry_price
-                        if sl_distance_pct < MIN_SL_DISTANCE:
+                        if not rejected and sl_distance_pct < MIN_SL_DISTANCE:
                             logger.warning(f"   ❌ {symbol} SL çok dar ({sl_distance_pct*100:.2f}% < {MIN_SL_DISTANCE*100:.1f}%), skip")
-                            continue
+                            rejected = True
+                            rejection_details.append('sl_distance')
                         
                         # ════════════════════════════════════════════════
                         # ✅ YENİ: RANGE WIDTH FİLTRESİ
                         # ════════════════════════════════════════════════
-                        range_width = signal.get('range_width', 0)
-                        if range_width < MIN_RANGE_WIDTH:
+                        if not rejected and range_width < MIN_RANGE_WIDTH:
                             logger.warning(f"   ❌ {symbol} range çok dar ({range_width*100:.2f}% < {MIN_RANGE_WIDTH*100:.1f}%), skip")
-                            continue
+                            rejected = True
+                            rejection_details.append('range_width')
                         
                         # ════════════════════════════════════════════════
                         # ✅ YENİ: DUPLICATE SYMBOL FİLTRESİ
                         # ════════════════════════════════════════════════
-                        db = db_session()
-                        try:
-                            existing = db.query(OpenPosition).filter_by(symbol=symbol).count()
-                            if existing >= MAX_POSITIONS_PER_SYMBOL:
-                                logger.warning(f"   ❌ {symbol} zaten açık pozisyon var, skip")
-                                continue
-                        finally:
-                            db_session.remove()
+                        if not rejected:
+                            db = db_session()
+                            try:
+                                existing = db.query(OpenPosition).filter_by(symbol=symbol).count()
+                                if existing >= MAX_POSITIONS_PER_SYMBOL:
+                                    logger.warning(f"   ❌ {symbol} zaten açık pozisyon var, skip")
+                                    rejected = True
+                                    rejection_details.append('duplicate_symbol')
+                            finally:
+                                db_session.remove()
+                        
+                        # ════════════════════════════════════════════════
+                        # 🎯 NEAR-MISS DETECTION (v12.1)
+                        # ════════════════════════════════════════════════
+                        if rejected and NEAR_MISS_ENABLED:
+                            # Calculate near-miss score
+                            near_miss_info = calculate_near_miss_score(
+                                signal=signal,
+                                range_width=range_width,
+                                min_range_width=MIN_RANGE_WIDTH,
+                                rr_ratio=rr_ratio,
+                                min_rr_ratio=MIN_RR_RATIO,
+                                sl_distance_pct=sl_distance_pct,
+                                min_sl_distance=MIN_SL_DISTANCE,
+                                range_quality=range_quality,
+                                min_quality=MIN_QUALITY,
+                                quality_score=quality_score,
+                                threshold_percent=NEAR_MISS_THRESHOLD_PERCENT
+                            )
+                            
+                            if near_miss_info:
+                                # This is a near-miss - store in database
+                                log_near_miss_detection(symbol, near_miss_info)
+                                
+                                db = db_session()
+                                try:
+                                    # Check if already exists (avoid duplicates)
+                                    existing_nm = db.query(NearMissSignal).filter(
+                                        NearMissSignal.symbol == symbol,
+                                        NearMissSignal.is_active == True,
+                                        NearMissSignal.is_consumed == False
+                                    ).first()
+                                    
+                                    if not existing_nm:
+                                        # Create new near-miss record
+                                        nm_record = create_near_miss_record(
+                                            symbol, signal, near_miss_info, NEAR_MISS_TTL_MINUTES
+                                        )
+                                        nm_obj = NearMissSignal(**nm_record)
+                                        db.add(nm_obj)
+                                        db.commit()
+                                        logger.info(f"   💾 Near-miss saved to DB (ID: {nm_obj.id})")
+                                    else:
+                                        # Update existing if higher priority
+                                        if near_miss_info['priority_score'] > existing_nm.priority_score:
+                                            existing_nm.priority_score = near_miss_info['priority_score']
+                                            existing_nm.missing_criteria_percent = near_miss_info['missing_criteria_percent']
+                                            existing_nm.current_price = signal['entry_price']
+                                            db.commit()
+                                            logger.info(f"   🔄 Near-miss updated (higher priority)")
+                                except Exception as nm_error:
+                                    db.rollback()
+                                    logger.error(f"   ❌ Near-miss DB error: {nm_error}")
+                                finally:
+                                    db_session.remove()
+                            
+                            # Skip this signal (rejected)
+                            continue
+                        
+                        # If rejected but not near-miss, skip
+                        if rejected:
+                            continue
                         
                         # ════════════════════════════════════════════════
                         # TÜM FİLTRELER BAŞARILI - POZİSYON AÇ
@@ -735,10 +827,27 @@ if __name__ == "__main__":
         logger.info("\n⚙️ Binance ayarları kontrol ediliyor...")
         ensure_one_way_mode()
         
+        # Position lock (shared between threads)
+        from threading import Lock
+        position_lock = Lock()
+        
         # Websocket position monitor başlat
         monitor_thread = Thread(target=monitor_positions_websocket, args=(stop_event,), daemon=True)
         monitor_thread.start()
         logger.info("✅ Websocket position monitor başlatıldı")
+        
+        # Near-miss monitor başlat (if enabled)
+        if NEAR_MISS_ENABLED:
+            from range_near_miss_monitor import run_near_miss_monitor
+            near_miss_thread = Thread(
+                target=run_near_miss_monitor,
+                args=(stop_event, position_lock),
+                daemon=True
+            )
+            near_miss_thread.start()
+            logger.info("✅ ⚡ Near-Miss Monitor başlatıldı")
+        else:
+            logger.info("ℹ️  Near-Miss Monitor devre dışı")
         
         # Scanner başlat
         range_scanner_thread()

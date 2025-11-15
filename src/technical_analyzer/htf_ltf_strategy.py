@@ -76,36 +76,37 @@ def check_htf_filter_1h(df_1h: pd.DataFrame, symbol: str = "") -> Optional[str]:
     rsi = float(last['rsi'])
     macd_hist = float(last['macd_hist'])
     
-    # LONG KOŞULLARI
+    # LONG KOŞULLARI (2/3 yeterli - daha esnek)
     long_price = close > ema50
-    long_rsi = rsi > 50
+    long_rsi = rsi > 45  # 50 → 45 (daha esnek)
     long_macd = macd_hist > 0
     
-    # SHORT KOŞULLARI
+    # SHORT KOŞULLARI (2/3 yeterli)
     short_price = close < ema50
-    short_rsi = rsi < 50
+    short_rsi = rsi < 55  # 50 → 55 (daha esnek)
     short_macd = macd_hist < 0
     
-    # Karar
-    if long_price and long_rsi and long_macd:
-        logger.info(f"✅ {symbol} 1H FILTER → LONG İZİN VERİLİR")
-        logger.info(f"   Price: ${close:.2f} > EMA50: ${ema50:.2f}")
-        logger.info(f"   RSI: {rsi:.1f} > 50")
-        logger.info(f"   MACD Hist: {macd_hist:.4f} > 0")
+    # Karar - 2/3 koşul yeterli
+    long_count = sum([long_price, long_rsi, long_macd])
+    short_count = sum([short_price, short_rsi, short_macd])
+    
+    if long_count >= 2:
+        logger.info(f"✅ {symbol} 1H FILTER → LONG İZİN VERİLİR ({long_count}/3 koşul)")
+        logger.info(f"   Price > EMA50: {long_price} (${close:.2f} vs ${ema50:.2f})")
+        logger.info(f"   RSI > 45: {long_rsi} ({rsi:.1f})")
+        logger.info(f"   MACD > 0: {long_macd} ({macd_hist:.4f})")
         return 'LONG'
     
-    elif short_price and short_rsi and short_macd:
-        logger.info(f"✅ {symbol} 1H FILTER → SHORT İZİN VERİLİR")
-        logger.info(f"   Price: ${close:.2f} < EMA50: ${ema50:.2f}")
-        logger.info(f"   RSI: {rsi:.1f} < 50")
-        logger.info(f"   MACD Hist: {macd_hist:.4f} < 0")
+    elif short_count >= 2:
+        logger.info(f"✅ {symbol} 1H FILTER → SHORT İZİN VERİLİR ({short_count}/3 koşul)")
+        logger.info(f"   Price < EMA50: {short_price} (${close:.2f} vs ${ema50:.2f})")
+        logger.info(f"   RSI < 55: {short_rsi} ({rsi:.1f})")
+        logger.info(f"   MACD < 0: {short_macd} ({macd_hist:.4f})")
         return 'SHORT'
     
     else:
-        # Kararsız durum - detaylı log
-        logger.info(f"⚠️ {symbol} 1H FILTER → KARARSIZ (İşlem yok)")
-        logger.info(f"   LONG: Price={long_price}, RSI={long_rsi}, MACD={long_macd}")
-        logger.info(f"   SHORT: Price={short_price}, RSI={short_rsi}, MACD={short_macd}")
+        # Kararsız durum
+        logger.debug(f"⚠️ {symbol} 1H FILTER → KARARSIZ ({long_count} LONG, {short_count} SHORT)")
         return None
 
 
@@ -182,13 +183,24 @@ def check_ltf_trigger_15m(
     # LONG TRIGGER (sadece allowed_direction='LONG' ise kontrol et)
     # ───────────────────────────────────────────────────────────────────
     if allowed_direction == 'LONG':
-        # 🔥 KRİTİK: SON MUMDA CROSSOVER OLMALI!
-        # 15M timeframe'de son mum = en güncel fiyat hareketi
-        # Önceki mumda EMA5 <= EMA20, şu anda EMA5 > EMA20
+        # 🔥 ESNEK: Son 2 mumda crossover arayabiliriz
+        # 15M timeframe'de son 2 mum içinde crossover yeterli
         
+        # Son mum kontrolü
         crossover_on_last_candle = (ema5_prev <= ema20_prev) and (ema5_curr > ema20_curr)
         
-        if not crossover_on_last_candle:
+        # Bir önceki mum kontrolü (ek şans)
+        if len(df_15m) >= 3:
+            prev2 = df_15m.iloc[-3]
+            ema5_prev2 = float(prev2['ema5'])
+            ema20_prev2 = float(prev2['ema20'])
+            crossover_on_prev_candle = (ema5_prev2 <= ema20_prev2) and (ema5_prev > ema20_prev)
+        else:
+            crossover_on_prev_candle = False
+        
+        has_crossover = crossover_on_last_candle or crossover_on_prev_candle
+        
+        if not has_crossover:
             # 🔍 PRE-CROSSOVER DETECTION: EMA'lar yaklaşıyor mu?
             ema_distance_pct = abs((ema5_curr - ema20_curr) / ema20_curr) * 100
             proximity_threshold = 0.5  # %0.5 - crossover'a yakın
@@ -207,15 +219,19 @@ def check_ltf_trigger_15m(
                     logger.info(f"   🎯 Yaklaşık {int(ema_distance_pct / abs(ema5_slope - ema20_slope + 0.0001) * 15)} dakika içinde crossover olabilir!")
             
             logger.debug(f"   {symbol} 15M: LONG için SON MUMDA crossover YOK (EMA5 prev: {ema5_prev:.4f}, curr: {ema5_curr:.4f} | EMA20 prev: {ema20_prev:.4f}, curr: {ema20_curr:.4f})")
-            return None        # MACD Histogram kontrolü
-        if macd_hist_curr <= 0:
-            logger.debug(f"   {symbol} 15M: LONG için MACD Histogram <= 0 ({macd_hist_curr:.4f})")
+            return None        # MACD Histogram kontrolü (opsiyonel - RSI yeterli ise skip edilebilir)
+        macd_ok = macd_hist_curr > 0
+        
+        # RSI kontrolü (45 < RSI < 85 - GENİŞLETİLDİ)
+        rsi_ok = 45 < rsi_curr < 85
+        
+        if not rsi_ok:
+            logger.debug(f"   {symbol} 15M: LONG için RSI aralık dışı ({rsi_curr:.1f}, gerekli: 45-85)")
             return None
         
-        # RSI kontrolü (50 < RSI < 75)
-        if rsi_curr <= 50 or rsi_curr >= 75:
-            logger.debug(f"   {symbol} 15M: LONG için RSI aralık dışı ({rsi_curr:.1f}, gerekli: 50-75)")
-            return None
+        # MACD zorunlu değil ama varsa daha iyi
+        if not macd_ok:
+            logger.debug(f"   {symbol} 15M: MACD negatif ama RSI OK, devam ediliyor ({macd_hist_curr:.4f})")
         
         # ✅ TÜM KOŞULLAR SAĞLANDI
         logger.info(f"🎯 {symbol} 15M TRIGGER → LONG SİNYALİ!")
@@ -239,13 +255,23 @@ def check_ltf_trigger_15m(
     # SHORT TRIGGER (sadece allowed_direction='SHORT' ise kontrol et)
     # ───────────────────────────────────────────────────────────────────
     elif allowed_direction == 'SHORT':
-        # 🔥 KRİTİK: SON MUMDA CROSSOVER OLMALI!
-        # 15M timeframe'de son mum = en güncel fiyat hareketi
-        # Önceki mumda EMA5 >= EMA20, şu anda EMA5 < EMA20
+        # 🔥 ESNEK: Son 2 mumda crossover arayabiliriz
         
+        # Son mum kontrolü
         crossover_on_last_candle = (ema5_prev >= ema20_prev) and (ema5_curr < ema20_curr)
         
-        if not crossover_on_last_candle:
+        # Bir önceki mum kontrolü (ek şans)
+        if len(df_15m) >= 3:
+            prev2 = df_15m.iloc[-3]
+            ema5_prev2 = float(prev2['ema5'])
+            ema20_prev2 = float(prev2['ema20'])
+            crossover_on_prev_candle = (ema5_prev2 >= ema20_prev2) and (ema5_prev < ema20_prev)
+        else:
+            crossover_on_prev_candle = False
+        
+        has_crossover = crossover_on_last_candle or crossover_on_prev_candle
+        
+        if not has_crossover:
             # 🔍 PRE-CROSSOVER DETECTION: EMA'lar yaklaşıyor mu?
             ema_distance_pct = abs((ema5_curr - ema20_curr) / ema20_curr) * 100
             proximity_threshold = 0.5  # %0.5 - crossover'a yakın

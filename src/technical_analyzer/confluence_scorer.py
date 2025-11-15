@@ -1,13 +1,20 @@
 # src/technical_analyzer/confluence_scorer.py
 """
-v11.3: CONFLUENCE SCORING SYSTEM
-=================================
+v12.0: CONFLUENCE SCORING SYSTEM WITH EXPONENTIAL SYNERGY
+==========================================================
 
 Multi-timeframe sinyalleri birleştirip 0-10 arası kalite skoru hesaplar.
-Win rate artırmak için minimum threshold (7.0) uygular.
+V12.0: Linear combination yerine exponential synergy bonus.
 
-Scoring Formula:
-    Total Score = (HTF_Score * 0.6) + (LTF_Score * 0.4) + Sentiment_Bonus
+Scoring Formula (V12.0):
+    Base Score = (HTF_Score * 0.6) + (LTF_Score * 0.4) + Sentiment_Bonus
+    
+    Synergy Multiplier:
+    - If HTF + LTF both strong (>80% each): 1.3x multiplier
+    - If both medium (>50% each): 1.1x multiplier
+    - If conflicting (one strong, one weak): 0.8x penalty
+    
+    Final Score = Base Score * Synergy Multiplier
 
 HTF Score (1H - Max 6 points):
     - EMA Alignment (5>20>50): +2 pts
@@ -26,7 +33,7 @@ Sentiment Bonus (0-3 points):
     - Quality C: +1 pt
     - Quality D: 0 pts
 
-Threshold: MIN_CONFLUENCE_SCORE = 7.0/10
+Threshold: MIN_CONFLUENCE_SCORE = 5.0/10 (v12.0: was 3.5, restored to 5.0)
 """
 
 import logging
@@ -292,9 +299,135 @@ class ConfluenceScorer:
                 'ltf_score': 4.0,
                 'sentiment_bonus': 3.0,
                 'weighted_score': 8.5,
+                'synergy_multiplier': 1.3,
+                'final_score': 11.0,
                 'passed_threshold': True,
                 'recommendation': 'STRONG_SIGNAL'
             }
+        """
+        htf_total = htf_score_data.get('total', 0)
+        ltf_total = ltf_score_data.get('total', 0)
+        sentiment = self.sentiment_bonus.get(quality_grade, 0)
+        
+        # Base weighted calculation
+        weighted = (htf_total * self.htf_weight) + (ltf_total * self.ltf_weight) + sentiment
+        
+        # V12.0: Calculate synergy multiplier (exponential bonus for alignment)
+        synergy_multiplier = self._calculate_synergy_multiplier(
+            htf_total, ltf_total, signal_direction
+        )
+        
+        # Apply synergy multiplier
+        final_score = weighted * synergy_multiplier
+        
+        # Normalize to 0-10 scale (cap at 10)
+        final_score = min(10.0, final_score)
+        final_score = round(final_score, 1)
+        
+        passed = final_score >= self.min_score
+        
+        # Recommendation based on score
+        if final_score >= 8.0:
+            recommendation = 'STRONG_SIGNAL'
+        elif final_score >= 7.0:
+            recommendation = 'GOOD_SIGNAL'
+        elif final_score >= 5.0:
+            recommendation = 'MODERATE_SIGNAL'
+        else:
+            recommendation = 'WEAK_SIGNAL'
+        
+        result = {
+            'total_score': final_score,
+            'htf_score': round(htf_total, 1),
+            'ltf_score': round(ltf_total, 1),
+            'sentiment_bonus': round(sentiment, 1),
+            'weighted_score': round(weighted, 1),
+            'synergy_multiplier': round(synergy_multiplier, 2),
+            'final_score': final_score,
+            'passed_threshold': passed,
+            'min_threshold': self.min_score,
+            'recommendation': recommendation,
+            'htf_details': htf_score_data,
+            'ltf_details': ltf_score_data
+        }
+        
+        logger.info(f"📊 Confluence Score: {final_score}/10 (base: {weighted:.1f} × synergy: {synergy_multiplier:.2f})")
+        logger.info(f"   HTF: {htf_total}, LTF: {ltf_total}, Sentiment: {sentiment}")
+        logger.info(f"   Threshold: {self.min_score} → {'✅ PASSED' if passed else '❌ REJECTED'}")
+        
+        return result
+    
+    def _calculate_synergy_multiplier(
+        self,
+        htf_score: float,
+        ltf_score: float,
+        signal_direction: str
+    ) -> float:
+        """
+        V12.0: Calculate exponential synergy multiplier
+        
+        Logic:
+        - Both timeframes strong (>80%): 1.3x multiplier (exponential bonus)
+        - Both medium (>50%): 1.15x multiplier
+        - One strong, one medium: 1.0x (neutral)
+        - Conflicting (one strong opposite direction): 0.8x penalty
+        
+        Args:
+            htf_score: HTF score (max 6)
+            ltf_score: LTF score (max 5)
+            signal_direction: 'LONG' or 'SHORT'
+        
+        Returns:
+            Multiplier (0.8 - 1.3)
+        """
+        # Normalize to percentages
+        htf_percent = htf_score / 6.0  # Max HTF = 6
+        ltf_percent = ltf_score / 5.0  # Max LTF = 5
+        
+        # Strong alignment (both >80%)
+        if htf_percent > 0.80 and ltf_percent > 0.80:
+            multiplier = 1.30  # Exponential bonus
+            logger.debug(f"   🚀 Strong multi-TF alignment: {multiplier}x multiplier")
+        
+        # Good alignment (both >60%)
+        elif htf_percent > 0.60 and ltf_percent > 0.60:
+            multiplier = 1.15  # Moderate bonus
+            logger.debug(f"   ✅ Good multi-TF alignment: {multiplier}x multiplier")
+        
+        # Medium alignment (both >40%)
+        elif htf_percent > 0.40 and ltf_percent > 0.40:
+            multiplier = 1.05  # Small bonus
+            logger.debug(f"   ⚪ Medium multi-TF alignment: {multiplier}x multiplier")
+        
+        # Weak signal (one or both <40%)
+        elif htf_percent < 0.40 or ltf_percent < 0.40:
+            multiplier = 0.90  # Small penalty
+            logger.debug(f"   ⚠️ Weak multi-TF signal: {multiplier}x multiplier")
+        
+        # Conflicting signals (one strong, one very weak)
+        elif (htf_percent > 0.70 and ltf_percent < 0.30) or (ltf_percent > 0.70 and htf_percent < 0.30):
+            multiplier = 0.80  # Penalty for conflict
+            logger.warning(f"   🚫 Conflicting multi-TF signals: {multiplier}x multiplier")
+        
+        else:
+            # Default neutral
+            multiplier = 1.0
+        
+        return multiplier
+
+
+# Singleton instance
+_confluence_scorer_instance: Optional[ConfluenceScorer] = None
+
+
+def get_confluence_scorer(config):
+    """Get or create ConfluenceScorer singleton"""
+    global _confluence_scorer_instance
+    
+    if _confluence_scorer_instance is None:
+        _confluence_scorer_instance = ConfluenceScorer(config)
+    
+    return _confluence_scorer_instance
         """
         htf_total = htf_score_data.get('total', 0)
         ltf_total = ltf_score_data.get('total', 0)

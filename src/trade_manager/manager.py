@@ -697,7 +697,9 @@ def continuously_check_positions(
                     # 1. Kapanacakları işle
                     for pos, close_reason, close_price in positions_to_close:
                         pos_in_db = db.get(OpenPosition, pos.id) # DB'deki en güncel hali al
-                        if pos_in_db is None: continue # Zaten kapatılmış
+                        if pos_in_db is None:
+                            logger.debug(f"Pozisyon ID {pos.id} zaten kapatılmış, atlıyoruz")
+                            continue # Zaten kapatılmış
                         
                         try:
                             # 🔥 KRİTİK: BİNANCE'DE POZİSYONU KAPAT!
@@ -771,21 +773,34 @@ def continuously_check_positions(
                             logger.info(f"   Sembol: {pos_in_db.symbol} ({pos_in_db.direction}) | Giriş: {pos_in_db.entry_price}, Kapanış: {close_price}")
                             if pnl_result: logger.info(f"   PnL: {pnl_usd:.2f} USD ({pnl_percent:.2f}%)")
 
-                            # Geçmişe Ekle
-                            history_entry = TradeHistory(
-                                symbol=pos_in_db.symbol, strategy=pos_in_db.strategy, direction=pos_in_db.direction,
-                                quality_grade=pos_in_db.quality_grade, entry_price=pos_in_db.entry_price,
-                                close_price=close_price, sl_price=pos_in_db.sl_price, tp_price=pos_in_db.tp_price,
-                                position_size_units=pos_in_db.position_size_units, final_risk_usd=pos_in_db.final_risk_usd,
-                                open_time=pos_in_db.open_time, close_time=int(time.time()),
-                                close_reason=close_reason, pnl_usd=pnl_usd, pnl_percent=pnl_percent,
-                                leverage=pos_in_db.leverage  # YENİ: Aşama 2
-                            )
-                            db.add(history_entry)
-                            notify_detail = history_entry.__dict__.copy()
-                            # Telegram için ek bilgiler
-                            notify_detail['position_size_usd'] = pos_in_db.entry_price * pos_in_db.position_size_units
-                            closed_positions_details_for_notify.append(notify_detail)
+                            # ✅ FIX: TradeHistory'ye SADECE BİR KERE ekle (duplicate önleme)
+                            # Önce aynı pozisyon zaten kaydedilmiş mi kontrol et
+                            existing_history = db.query(TradeHistory).filter(
+                                TradeHistory.symbol == pos_in_db.symbol,
+                                TradeHistory.open_time == pos_in_db.open_time,
+                                TradeHistory.entry_price == pos_in_db.entry_price,
+                                TradeHistory.close_reason == close_reason
+                            ).first()
+                            
+                            if existing_history:
+                                logger.warning(f"⚠️ {pos_in_db.symbol} zaten TradeHistory'de var, duplicate eklenmedi!")
+                            else:
+                                # Geçmişe Ekle
+                                history_entry = TradeHistory(
+                                    symbol=pos_in_db.symbol, strategy=pos_in_db.strategy, direction=pos_in_db.direction,
+                                    quality_grade=pos_in_db.quality_grade, entry_price=pos_in_db.entry_price,
+                                    close_price=close_price, sl_price=pos_in_db.sl_price, tp_price=pos_in_db.tp_price,
+                                    position_size_units=pos_in_db.position_size_units, final_risk_usd=pos_in_db.final_risk_usd,
+                                    open_time=pos_in_db.open_time, close_time=int(time.time()),
+                                    close_reason=close_reason, pnl_usd=pnl_usd, pnl_percent=pnl_percent,
+                                    leverage=pos_in_db.leverage  # YENİ: Aşama 2
+                                )
+                                db.add(history_entry)
+                                notify_detail = history_entry.__dict__.copy()
+                                # Telegram için ek bilgiler
+                                notify_detail['position_size_usd'] = pos_in_db.entry_price * pos_in_db.position_size_units
+                                closed_positions_details_for_notify.append(notify_detail)
+                                logger.debug(f"✅ {pos_in_db.symbol} TradeHistory'ye eklendi")
 
                             # Açık Pozisyonlardan Sil
                             db.delete(pos_in_db)
@@ -1119,27 +1134,48 @@ def close_position(position_id: int, exit_price: float, reason: str):
         cost_basis = position.entry_price * size_units if size_units else 0
         pnl_percent = (pnl_usd / cost_basis * 100) if cost_basis else 0
         
-        # STEP 3: Trade history'ye kaydet
-        trade_history = TradeHistory(
-            symbol=position.symbol,
-            direction=position.direction,
-            entry_price=position.entry_price,
-            exit_price=exit_price,
-            sl_price=position.sl_price,
-            tp_price=position.tp_price,
-            position_size_units=size_units,
-            pnl_usd=pnl_usd,
-            pnl_percent=pnl_percent,
-            close_reason=reason,
-            signal_time=position.signal_time,
-            close_time=datetime.now(),
-            quality_grade=position.quality_grade,
-            planned_risk_percent=position.planned_risk_percent,
-            confluence_score=getattr(position, 'confluence_score', None),  # 🆕 v11.3
-            htf_score=getattr(position, 'htf_score', None),  # 🆕 v11.3
-            ltf_score=getattr(position, 'ltf_score', None)  # 🆕 v11.3
+        # STEP 3: Trade history'ye kaydet (duplicate kontrolü ile)
+        # Önce aynı pozisyon zaten kaydedilmiş mi kontrol et
+        open_time_value = getattr(position, 'open_time', None)
+        
+        existing_history = db.query(TradeHistory).filter(
+            TradeHistory.symbol == position.symbol,
+            TradeHistory.entry_price == position.entry_price,
+            TradeHistory.close_reason == reason
         )
-        db.add(trade_history)
+        
+        # open_time varsa daha kesin filtreleme yap
+        if open_time_value is not None:
+            existing_history = existing_history.filter(TradeHistory.open_time == open_time_value)
+        
+        existing_history = existing_history.first()
+        
+        if existing_history:
+            logger.warning(f"⚠️ {position.symbol} zaten TradeHistory'de var (close_position), duplicate eklenmedi!")
+            trade_history = existing_history  # Telegram için mevcut kaydı kullan
+        else:
+            trade_history = TradeHistory(
+                symbol=position.symbol,
+                direction=position.direction,
+                entry_price=position.entry_price,
+                exit_price=exit_price,
+                sl_price=position.sl_price,
+                tp_price=position.tp_price,
+                position_size_units=size_units,
+                pnl_usd=pnl_usd,
+                pnl_percent=pnl_percent,
+                close_reason=reason,
+                open_time=open_time_value if open_time_value else int(time.time()),
+                close_time=int(time.time()),
+                quality_grade=getattr(position, 'quality_grade', None),
+                planned_risk_percent=getattr(position, 'planned_risk_percent', None),
+                confluence_score=getattr(position, 'confluence_score', None),  # 🆕 v11.3
+                htf_score=getattr(position, 'htf_score', None),  # 🆕 v11.3
+                ltf_score=getattr(position, 'ltf_score', None),  # 🆕 v11.3
+                strategy=getattr(position, 'strategy', None)  # ✅ FIX: strategy eklendi
+            )
+            db.add(trade_history)
+            logger.debug(f"✅ {position.symbol} TradeHistory'ye eklendi (close_position)")
         
         # STEP 4: Açık pozisyonu DB'den sil
         db.delete(position)

@@ -7,6 +7,7 @@ Tüm Binance Futures coinlerini tarayıp EMA kesişmesine yakın olanları tespi
 
 import logging
 import time
+import random
 from typing import Dict, List, Tuple, Optional
 from datetime import datetime
 import pandas as pd
@@ -282,7 +283,10 @@ class AdaptiveScanner:
         scanned_count = 0
         error_count = 0
         
-        logger.info(f"📊 Toplam {len(all_symbols)} coin taranacak...")
+        # 🎲 Rastgele sırayla tara (alfabetik bias önlemek için)
+        random.shuffle(all_symbols)
+        
+        logger.info(f"📊 Toplam {len(all_symbols)} coin taranacak (rastgele sırayla)...")
         
         for idx, symbol in enumerate(all_symbols, 1):
             try:
