@@ -21,6 +21,7 @@ PyYAML==6.0.1                  # YAML configuration
 
 # --- Scheduling & Task Management ---
 schedule==1.2.1                # Job scheduling for scan cycles
+APScheduler==3.10.4            # Advanced scheduling for Coolify deployment
 
 # --- API Retry & Error Handling ---
 tenacity==8.2.3                # Retry logic with exponential backoff

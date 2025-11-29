@@ -1,6 +1,13 @@
+# Coolify Deployment Configuration for ChimeraBot
+# This file provides optimized settings for Coolify deployment
+
+version: "3.8"
+
 services:
   chimerabot:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: chimerabot
     restart: unless-stopped
     environment:

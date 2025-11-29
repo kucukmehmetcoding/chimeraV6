@@ -69,6 +69,10 @@ Detaylı deployment rehberi için: **[DEPLOYMENT.md](DEPLOYMENT.md)**
 3. Environment variables'ı set edin (Binance API, Telegram vb.)
 4. Deploy edin!
 
+**Coolify için optimize edilmiş dosyalar:**
+- `coolify.yaml` - Coolify için optimize edilmiş Docker Compose konfigürasyonu
+- `test_coolify_deployment.py` - Deployment öncesi test script'i
+
 ## 📋 Gereksinimler
 
 ### API Keys (Zorunlu)
