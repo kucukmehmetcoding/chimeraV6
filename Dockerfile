@@ -2,6 +2,7 @@
 # Python 3.11 with TA-Lib support
 # v11.4.0 - Confluence-Based TP/SL System (CACHE BUST)
 
+# Ensure Python 3.11 compatibility
 FROM python:3.11-slim
 
 # Set working directory
@@ -17,6 +18,7 @@ RUN apt-get update && apt-get install -y \
     make \
     libc-dev \
     python3-dev \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install TA-Lib C library
@@ -77,18 +79,8 @@ ENV PYTHONPATH=/app
 
 # Accept build args from Coolify and set as ENV
 ARG ENABLE_REAL_TRADING=false
-ARG BINANCE_API_KEY
-ARG BINANCE_SECRET_KEY
-ARG TELEGRAM_BOT_TOKEN
-ARG TELEGRAM_CHAT_ID
-ARG BINANCE_TESTNET=False
 
 ENV ENABLE_REAL_TRADING=${ENABLE_REAL_TRADING}
-ENV BINANCE_API_KEY=${BINANCE_API_KEY}
-ENV BINANCE_SECRET_KEY=${BINANCE_SECRET_KEY}
-ENV TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-ENV TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
-ENV BINANCE_TESTNET=${BINANCE_TESTNET}
 
 # Set entrypoint
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
