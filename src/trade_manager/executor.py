@@ -360,6 +360,9 @@ class BinanceFuturesExecutor:
             
             logger.info(f"✅ {symbol} kaldıraç ayarlama komutu gönderildi: {leverage}x")
             
+            # 🆕 BACKEND PROPAGATION: Binance'in leverage'ı uygulaması için bekle
+            time.sleep(0.3)  # 300ms wait
+            
             # 🆕 DOĞRULAMA: Kaldıraç gerçekten ayarlandı mı kontrol et
             try:
                 position_info = self.client.futures_position_information(symbol=symbol)
@@ -685,10 +688,14 @@ class BinanceFuturesExecutor:
             
             logger.info(f"🎯 {symbol} için SL/TP emirleri yerleştiriliyor...")
             
+            # 🆕 KRİTİK: Fiyatları tick size'a göre yuvarla
+            rounded_sl_price = self.round_price(symbol, sl_price)
+            rounded_tp_price = self.round_price(symbol, tp_price)
+            
             # Fiyatları format string ile düzgün hassasiyette gönder
-            price_precision = symbol_info.get('price_precision', 5)
-            sl_price_str = f"{sl_price:.{price_precision}f}"
-            tp_price_str = f"{tp_price:.{price_precision}f}"
+            price_precision = symbol_info.get('price_precision', 8)
+            sl_price_str = f"{rounded_sl_price:.{price_precision}f}"
+            tp_price_str = f"{rounded_tp_price:.{price_precision}f}"
             
             logger.info(f"   📏 SL={sl_price_str}, TP={tp_price_str} (precision={price_precision})")
             
@@ -699,8 +706,8 @@ class BinanceFuturesExecutor:
                 type='STOP_MARKET',
                 quantity=rounded_qty,
                 stopPrice=sl_price_str,  # String olarak gönder
-                reduceOnly=True,  # ⚠️ KRİTİK: Sadece pozisyonu kapat
-                timeInForce='GTE_GTC'
+                reduceOnly=True  # ⚠️ KRİTİK: Sadece pozisyonu kapat
+                # timeInForce kaldırıldı - STOP_MARKET için geçersiz
             )
             
             logger.info(f"   ✅ SL Emri: {sl_order['orderId']} @ {sl_price_str}")
@@ -712,8 +719,8 @@ class BinanceFuturesExecutor:
                 type='TAKE_PROFIT_MARKET',
                 quantity=rounded_qty,
                 stopPrice=tp_price_str,  # String olarak gönder
-                reduceOnly=True,
-                timeInForce='GTE_GTC'
+                reduceOnly=True
+                # timeInForce kaldırıldı - TAKE_PROFIT_MARKET için geçersiz
             )
             
             logger.info(f"   ✅ TP Emri: {tp_order['orderId']} @ {tp_price_str}")
@@ -811,6 +818,10 @@ class BinanceFuturesExecutor:
             
             # Pozisyon LONG ise SELL, SHORT ise BUY
             close_side = 'SELL' if pos_amt > 0 else 'BUY'
+            
+            # 🆕 KRİTİK: Pozisyon kapatmadan önce tüm SL/TP emirlerini iptal et
+            logger.info(f"🗑️ {symbol} - Açık emirler iptal ediliyor...")
+            self.cancel_all_orders(symbol)
             
             logger.warning(f"⚠️ {symbol} POZİSYON KAPATILIYOR: {close_side} {close_qty} (MARKET)")
             

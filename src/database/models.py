@@ -232,6 +232,60 @@ class TradeHistory(Base):
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+class ScannerSignal(Base):
+    """
+    Scanner tarafından bulunan tüm sinyalleri kaydeder (açılsın veya açılmasın).
+    Tarihsel analiz ve performans takibi için kullanılır.
+    """
+    __tablename__ = "scanner_signals"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    symbol = Column(String(20), index=True, nullable=False)
+    signal_type = Column(String(10), nullable=False)  # bullish/bearish
+    
+    # Fiyat bilgileri
+    price = Column(Float, nullable=False)
+    stop_loss = Column(Float, nullable=False)
+    take_profit = Column(Float, nullable=False)
+    
+    # Risk yönetimi
+    rr_ratio = Column(Float)
+    position_size_pct = Column(Float)
+    sl_pct = Column(Float)
+    tp_pct = Column(Float)
+    
+    # Kalite metrikleri
+    strength = Column(Float)  # Signal strength (0-100)
+    alignment = Column(Float)  # Timeframe alignment (0-100)
+    quality_grade = Column(String(2))  # A/B/C/D
+    quality_score = Column(Float)  # Detailed quality score
+    
+    # Timeframe data
+    daily_trend = Column(String(10))  # bullish/bearish/sideways
+    four_h_quality = Column(Float)
+    one_h_confirm = Column(Boolean)
+    
+    # Market data
+    market_cap = Column(Float)
+    btc_correlation = Column(Float)
+    
+    # Scanner info
+    scanner_version = Column(String(20), default='1h-4h-1d')
+    scan_time = Column(DateTime, default=datetime.utcnow)
+    
+    # Position tracking
+    position_opened = Column(Boolean, default=False)  # Bu sinyal için pozisyon açıldı mı?
+    position_id = Column(Integer, nullable=True)  # OpenPosition ID (eğer açıldıysa)
+    
+    # Performance tracking (sonradan güncellenir)
+    outcome = Column(String(20), nullable=True)  # 'win', 'loss', 'breakeven', 'pending'
+    actual_pnl_pct = Column(Float, nullable=True)  # Gerçekleşen kar/zarar yüzdesi
+    max_favorable = Column(Float, nullable=True)  # En yüksek kar noktası
+    max_adverse = Column(Float, nullable=True)  # En kötü zarar noktası
+    
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 class NearMissSignal(Base):
     """
     Neredeyse geçen ama reddedilen sinyallerin gerçek zamanlı takibi.

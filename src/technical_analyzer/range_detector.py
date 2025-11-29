@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 def find_support_resistance_volume_weighted(
     df: pd.DataFrame, 
-    lookback: int = 96
+    lookback: int = 60
 ) -> Tuple[Optional[Dict], Optional[Dict]]:
     """
     Volume-weighted support/resistance tespiti (V3 ENHANCED)
@@ -37,7 +37,7 @@ def find_support_resistance_volume_weighted(
     
     Args:
         df: OHLCV dataframe
-        lookback: Geriye bakış periyodu (96 = 24 saat for 15m)
+        lookback: Geriye bakış periyodu (60 = 15 saat for 15m, optimize edildi)
     
     Returns:
         (support_dict, resistance_dict) veya (None, None)
@@ -377,7 +377,7 @@ def detect_false_breakout(
         }
 
 
-def find_support_resistance(df: pd.DataFrame, lookback: int = 96) -> Tuple[Optional[float], Optional[float]]:
+def find_support_resistance(df: pd.DataFrame, lookback: int = 60) -> Tuple[Optional[float], Optional[float]]:
     """
     LEGACY METHOD - Backward compatibility
     
@@ -446,8 +446,8 @@ def detect_range(df: pd.DataFrame, symbol: str, min_width: float = 0.015) -> Opt
         }
     """
     try:
-        # V3: Volume-weighted detection
-        support_dict, resistance_dict = find_support_resistance_volume_weighted(df, lookback=96)
+        # V3: Volume-weighted detection (optimized lookback)
+        support_dict, resistance_dict = find_support_resistance_volume_weighted(df, lookback=60)
         
         if support_dict is None or resistance_dict is None:
             return None
@@ -476,9 +476,12 @@ def detect_range(df: pd.DataFrame, symbol: str, min_width: float = 0.015) -> Opt
         # V3: False breakout detection
         false_breakout = detect_false_breakout(df, support_dict, resistance_dict, lookback=10)
         
-        # Trading recommendation
-        distance_to_support = (current_price - support) / support
-        distance_to_resistance = (resistance - current_price) / current_price
+        # Trading recommendation - FIX: Use consistent denominator for fair comparison
+        distance_to_support = abs(current_price - support) / current_price
+        distance_to_resistance = abs(resistance - current_price) / current_price
+        
+        # Debug logging for distance calculations
+        logger.debug(f"{symbol} mesafe hesaplaması: destek={distance_to_support:.4f} ({distance_to_support*100:.2f}%), direnç={distance_to_resistance:.4f} ({distance_to_resistance*100:.2f}%)")
         
         # A/B grade + yakın support = STRONG_BUY
         # C/D grade veya false breakout = dikkatli ol

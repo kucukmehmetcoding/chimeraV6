@@ -1,0 +1,31 @@
+# ============================================================================
+# ChimeraBot Minimal Requirements - Live Test Only
+# ============================================================================
+# Sadece live test için gerekli minimum paketler
+# Dependency conflict'leri önlemek için minimal versiyon kısıtlamaları
+# ============================================================================
+
+# Core Trading
+python-binance>=1.0.32
+pandas>=2.1.0
+numpy>=1.24.0
+
+# Database
+SQLAlchemy>=2.0.0
+
+# Configuration
+python-dotenv>=1.0.0
+
+# Scheduling
+schedule>=1.2.0
+
+# Retry Logic
+tenacity>=8.2.0
+
+# Telegram (optional - notifications için)
+python-telegram-bot>=21.0
+requests>=2.31.0
+
+# TA-Lib (Technical indicators)
+# Not: Sistem paket yöneticisi ile kurulmalı (brew install ta-lib / apt-get install libta-lib0-dev)
+TA-Lib>=0.4.28

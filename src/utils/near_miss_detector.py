@@ -51,10 +51,10 @@ def calculate_near_miss_score(
     rejections = []
     criteria_scores = []
     
-    # Kalite grade mapping
-    quality_map = {'A': 4, 'B': 3, 'C': 2, 'D': 1}
-    current_quality_num = quality_map.get(range_quality, 1)
-    min_quality_num = quality_map.get(min_quality, 3)
+    # Kalite grade mapping (30-95 scale - consistent with range_main.py)
+    quality_map = {'A': 95, 'B': 75, 'C': 55, 'D': 30}
+    current_quality_num = quality_map.get(range_quality, 30)
+    min_quality_num = quality_map.get(min_quality, 75)
     
     # ════════════════════════════════════════════════════════════
     # 1. RANGE WIDTH CHECK
@@ -105,20 +105,24 @@ def calculate_near_miss_score(
             })
     
     # ════════════════════════════════════════════════════════════
-    # 4. QUALITY GRADE CHECK
+    # 4. QUALITY GRADE CHECK (DİNAMİK KALİTE YÜKSELTMESİ)
     # ════════════════════════════════════════════════════════════
+    # Kalite düşükse izlemeye al - fiyat hareketi ile yükselebilir
+    # C → B → A dönüşümü gerçek zamanlı takip edilir
     if current_quality_num < min_quality_num:
-        # Allow one grade lower (B→C acceptable, C→D not)
         quality_score_normalized = current_quality_num / min_quality_num
         criteria_scores.append(quality_score_normalized)
         
-        if quality_score_normalized >= threshold_percent:
+        # C kalite bile kabul et (%67.5+ threshold)
+        # Çünkü fiyat hareketi ile B veya A'ya yükselebilir
+        relaxed_quality_threshold = threshold_percent * 0.75  # %90 * 0.75 = %67.5
+        if quality_score_normalized >= relaxed_quality_threshold:
             rejections.append({
                 'reason': 'quality',
                 'required': min_quality,
                 'actual': range_quality,
                 'score': quality_score_normalized,
-                'message': f"Quality {range_quality} (req: {min_quality}+)"
+                'message': f"Quality {range_quality} (req: {min_quality}+) - izleniyor, yükselebilir"
             })
     
     # ════════════════════════════════════════════════════════════
@@ -141,15 +145,18 @@ def calculate_near_miss_score(
             })
     
     # ════════════════════════════════════════════════════════════
-    # NEAR-MISS QUALIFICATION
+    # NEAR-MISS QUALIFICATION (GENİŞLETİLMİŞ)
     # ════════════════════════════════════════════════════════════
     
     # Eğer hiç rejection yoksa, normal reject (near-miss değil)
     if not rejections:
         return None
     
-    # En az bir kriterin %90+ threshold'u geçmesi gerekiyor
-    if not any(r['score'] >= threshold_percent for r in rejections):
+    # ESNEKLEŞME: Herhangi bir kriterin %67.5+ threshold'u geçmesi yeterli
+    # (Örnek: C kalite %67, range width %95, RR %88 → İzlemeye alınır)
+    # Gerçek zamanlı takipte TÜM kriterler kontrol edilecek
+    relaxed_threshold = threshold_percent * 0.75  # %90 * 0.75 = %67.5
+    if not any(r['score'] >= relaxed_threshold for r in rejections):
         return None
     
     # Average missing criteria score
@@ -196,18 +203,17 @@ def create_near_miss_record(
     
     record = {
         'symbol': symbol,
-        'direction': signal['direction'],
-        'support': signal['support'],
-        'resistance': signal['resistance'],
+        'direction': signal.get('signal', 'HOLD'),  # signal field contains LONG/SHORT/HOLD
+        'support': signal.get('support', 0),
+        'resistance': signal.get('resistance', 0),
         'current_price': signal['entry_price'],
-        'range_width_percent': signal.get('range_width', 0),
+        'range_width_percent': signal.get('range_width', 0) * 100,  # Convert to percentage
         'quality_grade': near_miss_info['range_quality'],
         'quality_score': near_miss_info['quality_score'],
-        'rejection_reason': near_miss_info['rejection_reasons'],
+        'rejection_reason': near_miss_info.get('rejection_reasons', ''),  # Already a string
         'missing_criteria_percent': near_miss_info['missing_criteria_percent'],
         'htf_confirmed': signal.get('htf_confirmation', False),
-        'htf_overlap_percent': signal.get('htf_overlap', 0),
-        'created_at': now,
+        'htf_overlap_percent': signal.get('htf_overlap', 0.0),
         'expires_at': expires_at,
         'is_active': True,
         'is_consumed': False,
@@ -222,6 +228,8 @@ def log_near_miss_detection(symbol: str, near_miss_info: Dict):
     logger.info(f"   🎯 NEAR-MISS: {symbol}")
     logger.info(f"      Quality: {near_miss_info['range_quality']} "
                f"(score: {near_miss_info['quality_score']:.2f})")
-    logger.info(f"      Missing: {near_miss_info['rejection_details']}")
+    rejection_reasons = near_miss_info.get('rejection_reasons', [])
+    if rejection_reasons:
+        logger.info(f"      Rejected: {', '.join(rejection_reasons)}")
     logger.info(f"      Criteria: {near_miss_info['missing_criteria_percent']*100:.0f}% met")
     logger.info(f"      Priority: {near_miss_info['priority_score']:.2f}")

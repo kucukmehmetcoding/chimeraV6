@@ -1001,3 +1001,23 @@ if ENABLE_REAL_TRADING:
         print("⚠️ TESTNET modu aktif - Gerçek para kullanılmayacak")
 else:
     print("ℹ️ Simülasyon modu - ENABLE_REAL_TRADING=False")
+
+# ═══════════════════════════════════════════════════════════
+# FIBONACCI BOT CONFIGURATION (Spot Market Dip Buying)
+# ═══════════════════════════════════════════════════════════
+
+FIBONACCI_MAX_COINS = int(os.getenv("FIBONACCI_MAX_COINS", 2))
+FIBONACCI_BUDGET_PER_COIN = float(os.getenv("FIBONACCI_BUDGET_PER_COIN", 100.0))
+FIBONACCI_TOTAL_BUDGET = float(os.getenv("FIBONACCI_TOTAL_BUDGET", 200.0))
+FIBONACCI_SCAN_INTERVAL_MINUTES = int(os.getenv("FIBONACCI_SCAN_INTERVAL_MINUTES", 5))
+FIBONACCI_DROP_THRESHOLD = float(os.getenv("FIBONACCI_DROP_THRESHOLD", -8.0))
+FIBONACCI_MIN_VOLUME = float(os.getenv("FIBONACCI_MIN_VOLUME", 1000000))
+FIBONACCI_LOOKBACK_DAYS = int(os.getenv("FIBONACCI_LOOKBACK_DAYS", 90))
+FIBONACCI_ADX_THRESHOLD = float(os.getenv("FIBONACCI_ADX_THRESHOLD", 40.0))
+
+# Fibonacci bütçe dağılımı (sabit - kod içinde kullanılıyor)
+FIBONACCI_BUDGET_DISTRIBUTION = {
+    0.618: 0.20,  # %20 bütçe
+    0.786: 0.35,  # %35 bütçe
+    1.000: 0.45   # %45 bütçe
+}
