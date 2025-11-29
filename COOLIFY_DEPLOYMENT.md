@@ -2,6 +2,12 @@
 
 Bu rehber, ChimeraBot'unuzu (Fibonacci Bot) Coolify ile GitHub üzerinden otomatik ve güvenli şekilde deploy etmek için hazırlanmıştır. Algoritma ve canlı işlem mantığına dokunulmaz, sadece deployment ve çalışma ortamı ayarlanır.
 
+## Önemli Not: Python 3.12 distutils Sorunu Çözüldü
+- Coolify Nixpacks kullanır ve otomatik olarak Python 3.12'ye geçebilir
+- Python 3.12'de `distutils` modülü kaldırıldığı için hata alabilirsiniz
+- Bu sorun `nixpacks.toml` ve `.nixpacks/config.toml` dosyaları ile çözüldü
+- Python versiyonu 3.11 olarak sabitlendi
+
 ---
 
 ## 1. GitHub Bağlantısı
